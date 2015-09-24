@@ -1,0 +1,147 @@
+<span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
+
+Truffle-lize Your Language Implementation in 5 Easy Steps
+=========================================================
+
+## What Is Truffle and How Can It Be Useful?
+
+[Truffle][1] is a Java framework for implementing interpreters. In combination
+with [Graal][2], it provides just-in-time (JIT) compilation based on simple
+[abstract-syntax-tree (AST) interpreters][3]. This means, one only has to
+implement the language once as part of the AST, and essentially gets a JIT
+compiler that can reach the performance of state-of-the-art virtual machines
+such as HotSpot for Java or V8 for JavaScript. Thus, Truffle is a useful
+approach for implementing languages that need to reach good performance. An
+alternative approach would be [RPython][4] with its meta-tracing just-in-time
+compiler. A more thorough comparison of the two approaches can be found
+[here][5] and [here][6]. However, for this series of blog posts, we are
+interested in a language running on top of the JVM, and thus, Truffle is our
+framework of choice.
+
+# Step 1: Setting A Goal and Choose A Benchmark
+
+While Truffle provides a nice set of features to simplify the implementation of
+languages, often the desire for better performance is a major reason for
+adopting it. Thus, we will thus focus on using Truffle to improve the
+performance of a language implementation.
+
+## Improve the Numerical Performance of Golo
+
+Our language of choice is going to be [Golo][7]. Golo has been designed as a
+dynamic language for the JVM that benefits from the JVM's `invokedynamic`
+mechanism to provide an expressive yet simple language experience. If you
+haven't heard of it before, don't worry. We will stick to the basics and focus
+on features that are common to many languages. From some basic benchmarks, we
+know that [Golo is still quite a bit slower on numeric code than Java][8].
+
+## Use Mandelbrot as a Benchmark
+
+To keep it simple, but still chose something that can be used to investigate
+interesting performance aspects, we will take a Mandelbrot calculation as our
+main example. The following code snippet is an abbreviated version of the [Java
+benchmark][9] we will use:
+
+```java
+while (y < size) {
+  double ci = (2.0 * y / size) - 1.0;
+  int x = 0;
+
+  while (x < size) {
+    // ...
+    double cr = (2.0 * x / size) - 1.5;
+
+    int z = 0;
+    int escape = 1;
+
+    while (z < 50) {
+      zr = zrzr - zizi + cr;
+      zi = 2.0 * zr * zi + ci;
+
+      zrzr = zr*zr;
+      zizi = zi*zi;
+
+      if (zrzr + zizi > 4.0) {
+        escape = 0;
+        break;
+      }
+// remainder left out for brevity
+```
+
+The first property to notice is that the computation is inside of three nested
+loops. Furthermore, most operations are on `double` values. For a dynamic
+language, this means that optimization of the lookup of operators and methods
+as well as the way `double` values are treated is essential for performance.
+
+In dynamic languages, the concrete operation behind the multiplication '`*`' the
+division '`/`' or a less-than '`<`' comparison operator is typically known only at
+runtime. For optimal performance a language implementation needs to ensure that
+that these operators are not looked up for every single operation, even if the
+general program semantics do not give any guarantees about the values they
+might operate on. Furthermore, sophisticated optimizations need to be able to
+move the processor instructions related to such lookups out of loops. Otherwise,
+the simple comparison in a loop condition could incur a huge overhead.
+
+Similarly, `double` values are often treated as objects. This usually means
+that they have a boxed representation. Thus, an object is allocated to hold the
+underlying primitive value of the `double`. This however means, that an object
+needs to be allocated. Since each operation potentially produces a new `double`
+object, this could mean a lot of work for the garbage collector. Another
+drawback is that the actual `double` value has to be unboxed before it can be
+processed by processor instructions. This means that there is at least a
+dereference operation for the value before the actual computation happens.
+
+In future parts of this series of blog posts, we will see how these issues can
+be approached with Truffle.
+
+## Initial Performance Comparison
+
+To get an initial idea of the performance difference between Golo and Java on
+our Mandelbrot benchmark, we are going to measure the peak performance. For
+that, we execute the benchmark on each VM 100 times and measure the execution
+time for the last 10 iterations.
+
+```{r initial-performance, fig.height=3, fig.width=7, echo=FALSE, message=FALSE}
+## Avoid the usual ReBench setup
+library(ggplot2)
+library(plyr)
+times_java_ns <- c(108918, 109289, 108809, 114980, 104198, 107264, 108012, 109215, 104651, 107225, 105856)
+times_golo_ns <- c(526187, 506568, 519333, 515142, 511595, 512679, 522535, 488186, 511581, 502145, 515739)
+data <- data.frame(VM = c(rep("Java", 11), rep("Golo", 11)), Time.ns = c(times_java_ns, times_golo_ns), stringsAsFactors = TRUE)
+stats <- ddply(data, ~ VM, summarise, Time.ms = mean(Time.ns) / 1000, sd = sd(Time.ns) / 1000)
+col <- c("#729fcf", "#e9b96e")
+ggplot(stats, aes(x = VM, y = Time.ms, fill = VM)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymax = Time.ms + sd, ymin = Time.ms - sd), width=0.25) +
+  coord_flip() + theme_bw() + scale_fill_manual(values=col) +
+  theme(legend.position="none")
+  
+  
+g <- stats[stats$VM == "Golo",]$Time.ms
+j <- stats[stats$VM == "Java",]$Time.ms
+slowdown <- round(g / j, 1)
+```
+
+As result, we see that Mandelbrot takes about `r round(j)`ms to execute on
+Java and about `r round(g)`ms on Golo, which means, Golo is about `r slowdown`x
+slower for our Mandelbrot benchmark. This leaves hopefully plenty of room to
+increase Golo's performance.
+
+## Oops, Golo Doesn't Have Bit Operations
+
+Ah well, before I forget it: Golo does not actually have bit operations. So,
+before we truffle-ize it, the next part of this blog post series will look
+briefly into the current Golo implementation. It compiles Golo directly to
+JVM bytecodes and relies heavily on `invokedynamic` to realize the dynamic
+language semantics. By adding bit operations, we will get a basic idea of
+how the implementation works to be able to compare it later to the Truffle
+version.
+
+[1]: https://github.com/OracleLabs/Truffle
+[2]: http://openjdk.java.net/projects/graal/
+[3]: https://en.wikipedia.org/wiki/Interpreter_(computing)#Abstract_Syntax_Tree_interpreters
+[4]: https://rpython.readthedocs.org/en/latest/
+[5]: http://stefan-marr.de/papers/ieee-soft-marr-et-al-are-we-there-yet/
+[6]: http://stefan-marr.de/papers/oopsla-marr-ducasse-meta-tracing-vs-partial-evaluation/
+[7]: http://golo-lang.org/
+[8]: http://arxiv.org/pdf/1505.06003v1.pdf
+[9]: https://github.com/smarr/Classic-Benchmarks/blob/master/benchmarks/Mandelbrot.java#L42

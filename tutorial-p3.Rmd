@@ -1,0 +1,405 @@
+<span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
+
+Truffle-lize Your Language Implementation in 5 Easy Steps
+=========================================================
+
+# Step 3: Initial Infrastructure and Supporting a Simple Fibonacci Function
+
+First, a word of warning. This post is much longer than I had hoped. The goal
+is to add merely enough support to Golo to be able to execute a Fibonacci
+function with Truffle. However, this means, we need to touch most of the basic
+concepts. And in the Golo implementation that corresponds to a patch that is
+about 1500 LOC large. So please bear with me, this could get a little
+long-winded. In case you missed the previous posts, this series starts with a
+[brief intro and motivation][0].
+
+## Adding Basic Truffle Support
+
+The first step for us is to configure the build system to include the Truffle
+dependencies. As of this writing, the latest released of Truffle and Graal is
+version 0.8 ([binary builds][0]).
+
+Since Golo uses Gradle as build system, we add a plugin to the `build.gradle`
+configuration to enable annotation processing support, which is required for
+the TruffleDSL, as well as the Truffle jars:
+
+```gradle
+plugins {
+  // ...
+  id "net.ltgt.apt" version "0.3"
+}
+
+dependencies {
+  // ...
+  compile 'com.oracle:truffle-api:0.8'
+  apt     'com.oracle:truffle-dsl-processor:0.8'
+  
+  // ...
+}
+```
+
+The next step might seem superflous, but it is going to be extremely useful.
+The first class we add to the Golo codebase is a `NotYetImplemented` exception:
+
+```java
+public class NotYetImplemented extends RuntimeException {}
+```
+
+With this class, we can mark all open issues/todo items and make the compilers
+happy, which allows us to do all our changes in the debugger. Why in the
+debugger? Because, I don't want to guess what Golo is doing. I don't know Golo.
+So, I just put a breakpoint where I assume I'll need to change something, and
+then start hacking there. The debugger then can just tell me what arguments I
+got, their values, etc. Trivial, but very convenient in ~~an unknown~~ any
+codebase.
+
+The next step is to add an option to Golo's start mechanism to convert the Golo
+IR not into bytecodes but to give us a Truffle AST that can be executed. For
+that, we add a `--truffle` option to the `golo` command. If we pass it on the
+command line, Golo will parse the files as normal and then use a visitor to
+convert the resulting `GoloModule` into a set of Truffle-based functions/ASTs 
+(cf. [change set][2]).
+
+## Concerting Golo's IR to a Truffle AST
+
+For Golo, I chose the approach of implementing a visitor over Golo's IR. The IR
+is already pretty high-level, and it could have been slightly changed to be
+compatible with Truffle. But, to avoid any unclear and unidiomatic artifacts, I
+chose to keep the IR and the Truffle AST clearly separated. For this post, this
+helps to make things clearer. In a practical system, it might not be necessary.
+So, the only [change we apply to the Golo IR][3] is to add `accept(.)` methods
+which perform a double dispatch to the corresponding method in the
+`TruffleGenerationGoloIrVisitor`. In a first step, the visitor could be left
+almost empty and just needs visitor methods for all IR elements, which in
+return can raise the `NotYetImplemented` exception. The full visitor was added
+with this [change][4].
+
+### Creating a Truffle AST at Runtime
+
+With this basic infrastructure in place, we can run Golo from the debugger
+executing the following program: `golo --truffle --files samples/fib.golo`
+
+```golo
+module samples.Fibonacci
+
+function fib = |n| {
+  if n < 2 {
+    return n
+  } else {
+    return fib(n - 1) + fib(n - 2)
+  }
+}
+
+function main = |args| {
+  println(fib(10))
+}
+```
+
+This is a simple recursive version of Fibonacci. We got multiple function calls,
+function arguments, control flow constructs, and basic arithmetic operations.
+Sounds simple, but will keep us busy for the rest of the post.
+
+The debugger should have hit by now the first `NotYetImplemented` exception in
+the visitor method for modules. Ignoring some Golo detail, for the moment it is
+sufficient to iterate over all `GoloFunction`s and visit them one by one. The
+corresponding `visitFunction(.)` eventually needs to assemble a
+Truffle-compatible function, but following the relevant execution flow, we
+first will transform the function's block, i.e., its body to a Truffle AST and
+worry about the details here later.
+
+### Basic Truffle Mechanisms: Nodes, Execute Methods, TypeSystems, and Frames
+
+For the body of the function, we need a common root node for all possible AST
+nodes. In the IR, the corresponding class is essentially `GoloStatement`. For
+our purposes we add `ExpressionNode`, which needs to extend Truffle's `Node`
+class. Furthermore, it needs to provide a set of `execute*(frame)` methods.
+
+The `execute*()` methods implement the semantics of an AST node. To be able to
+specialize the behavior of a node on the kind of value it should return, the
+`ExpressionNode` provides a set of basic implementations for all the types we
+want to be able to specialize on. These types are communicated explicitly to
+the TruffleDSL to facilitate code generation. We do this with the following
+`Types` class:
+
+```java
+@TypeSystem({
+  int.class,
+  boolean.class,
+  Object[].class
+})
+public class Types { }
+```
+
+With the `@TypeSystem` annotation, we list `int`, `boolean`, and `Object[]` as
+the three types of interest. The object array, we are using for arguments to
+function calls. And other than that, our Fibonacci program only knows integers
+and booleans so far. For the `ExpressionNode` class, we need the following code:
+
+```java
+public abstract class ExpressionNode extends Node {
+  public abstract Object executeGeneric(VirtualFrame frame);
+
+  public int executeInteger(VirtualFrame frame) throws UnexpectedResultException {
+	return TypesGen.expectInteger(executeGeneric(frame));
+  }
+
+  public boolean executeBoolean(VirtualFrame frame) throws UnexpectedResultException {
+	return TypesGen.expectBoolean(executeGeneric(frame));
+  }
+
+  public Object[] executeObjectArray(VirtualFrame frame) throws UnexpectedResultException {
+	return TypesGen.expectObjectArray(executeGeneric(frame));
+  }
+}
+```
+
+Note the abstract `executeGeneric(frame)` method. It is the generic execute
+method each node needs to implement. The other three type-specific methods can
+be implemented if it makes sense for a node. Otherwise, the fallback
+implementation provided here will call `executeGeneric(.)`, and then check that
+the result is of the expected type. This mechanism is useful for optimistic,
+i.e., speculative optimizations, which might not hold for all future executions
+of a node. We'll go into more details on this later. One might also notice the
+`frame` argument. The frame is the activation record of a Truffle function and
+is used to access the actual arguments to a function call, local variables, and
+other state a language implementation might need in the scope of a function.
+Later we will see the argument access. For the other aspects, please see a
+later post in this series.
+
+**Sequences**: Now with the `ExpressionNode` in place, we can go and transform
+the body of the `GoloFunction`, which is called a *block* and corresponds to a
+distinct lexical scope in Golo. In our case, this block contains only the `if
+... {} else {}` construct of the `fib` function, which needs to be visited.
+Once this is complete expressions of the block are wrapped by a `SequenceNode`,
+which holds them as child nodes:
+
+```java
+public final class SequenceNode extends ExpressionNode {
+  @Children private final ExpressionNode[] expressions;
+
+  public SequenceNode(final ExpressionNode[] expressions) {
+    this.expressions = expressions;
+  }
+
+  @ExplodeLoop
+  public Object executeGeneric(final VirtualFrame frame) {
+	for (int i = 0; i < expressions.length - 1; i++) {
+      expressions[i].executeGeneric(frame);
+    }
+    return expressions[expressions.length - 1].executeGeneric(frame);
+  }
+}
+```
+
+For the Truffle framework, it is important here that the `expressions` field of
+the class is annotated with `@Children` so that specializations are handled
+correctly and so that the Graal compiler knows these expressions can be
+considered constant. The `final` keyword is here not strictly necessary, but it
+is good practice to make the array final to avoid it being exchanged with
+another array that might have a different length.
+
+The `executeGeneric(.)` method uses these child expressions by iterating over
+them and recursively calling `executeGeneric(.)`. For the last expression, we
+actually care about the computed value and return it. For optimizations, it is
+also necessary to tell Graal that the loop here needs to be unrolled, i.e.,
+*exploded*. This makes sure that none of the calls to `executeGeneric(.)` have
+to be treated as polymorphic, but that they can be inlined, which enables many
+common compiler optimizations.
+
+**Argument Reads**: Continuing in the debugger with step-by-step transforming
+out `fib` function, the important element is going to be the conditional
+branch, which is transformed to Truffle nodes in the
+`visitConditionalBranching(.)` method. As a first step, we visit the condition
+`n < 2`. When diving into it, the left operand is a argument read of `n`. As
+mentioned earlier, function arguments are passed as `Object[]` arrays and are
+then available in the frame. We add the `LocalArgumentReadNode` class to read
+such arguments. The node keeps the index of the argument it corresponds to, and
+on execution, simply accesses the array and returns the value:
+
+```java
+public class LocalArgumentReadNode extends ExpressionNode {
+  protected final int index;
+
+  public LocalArgumentReadNode(int index) {
+    this.index = index;
+  }
+
+  public Object executeGeneric(VirtualFrame frame) {
+    return frame.getArguments()[index];
+  }
+}
+```
+
+**Literals**: The right operand is a literal integer `2`, and the node is
+simply returning the value. Note, for the compiler later on, it is important
+that the field in which the value is stored is `final`. This ensures that the
+compiler can treat the value as constant to enable optimizations.
+
+```java
+public class IntegerLiteralNode extends LiteralNode {
+  private final int val;
+
+  public IntegerLiteralNode(int val) {
+    this.val = val;
+  }
+
+  public int executeInteger(VirtualFrame frame) {
+    return val;
+  }
+
+  public Object executeGeneric(VirtualFrame frame) {
+    return val;
+  }
+}
+```
+
+The comparison is implemented as `LessThanNode`. For convenience, we extend the
+`BinaryNode` class:
+
+```java
+@NodeChildren({
+  @NodeChild(value = "left",  type = ExpressionNode.class),
+  @NodeChild(value = "right", type = ExpressionNode.class)
+})
+public abstract class BinaryNode extends ExpressionNode { }
+```
+
+**Node Children**: `BinaryNode` is a purely abstract classes without concrete
+implementation. Its main use is to provide the left and right subnodes, i.e.,
+node children by using the TruffleDSL. As the code above shows, we use the
+`@NodeChildren` annotation with two `@NodeChild annotations that define left
+and right to be of type `ExpressionNode`. The main benefit of using the DSL is
+that it will now generate the boilerplate code for specializations and handling
+many of the common issues for optimistic optimizations. In our specific case
+here, it enables use to implement the `LessThanNode` with the following code:
+
+```java
+public abstract class LessThanNode extends BinaryNode {
+
+  @Specialization
+  public boolean doIntegers(int left, int right) {
+    return left < right;
+  }
+}
+```
+
+**Specializations**: Note that `LessThanNode` is again an `abstract` class.
+However, it provides the `doIntegers` methods that is annotated with
+`@Specialization`. This means, the DSL will generate the necessary code to
+evaluate the `left` and `right` subexpressions of the `<` operation, which in
+our case are an argument read and an integer literal. If the evaluation returns
+the expected integers, it will make sure that the AST is rewritten to use the
+`doIntegers` method. Otherwise, it would throw an
+`UnsupportedSpecializationException` at runtime. For our Fibonacci support,
+this behavior is *good enough*. For a complete Golo implementation, we would of
+course need to provide the other necessary specializations as well.
+
+At this point, I still want to point out that the signature of `doIntegers` as
+well as the return type of `executeInteger(.)` uses the primitive `int` and
+thus avoids boxing of the integer.
+
+**AST Control-Flow**: After completing the condition, we are back in the
+`visitConditionalBranching(.)` method with the debugger. The next element, for
+which we need to provide an implementation is the going to be the *then*-branch
+of the condition. Stepping into it, we reach the `visitReturnStatement(.)`
+method. In our `fib` function, we know this is the `return n` branch. So, there
+will be an argument read again, which we already covered. Thus, let's focus on
+the return itself. If one imagines what happens when executing an AST as we
+build it, then there seems to be an issue of how we can return from such a
+nested node back to the function node that is executing somewhere on the Java
+stack. Turns out, the solution can rely on Java exceptions. In the Truffle
+framework, we got the `ControlFlowException`, which we subclass as follows:
+
+```java
+public class ReturnException extends ControlFlowException {
+  private final Object result;
+
+  public ReturnException(Object result) {
+    this.result = result;
+  }
+
+  public Object getResult() {
+    return result;
+  }
+}
+```
+
+This `ReturnException` takes the result we want to return from the function,
+and when it is thrown, it will unwind the Java stack for us. Thus, we only need
+to make sure that we catch it later on in the function that we still need to
+create. But more on that later. Next to the `ReturnException`, we also need the
+corresponding AST node:
+
+```java
+public class ReturnNode extends ExpressionNode {
+  @Child protected ExpressionNode expr;
+
+  public ReturnNode(final ExpressionNode expr) {
+    this.expr = expr;
+  }
+
+  public Object executeGeneric(final VirtualFrame frame) {
+    throw new ReturnException(expr.executeGeneric(frame));
+  }
+}
+```
+
+`ReturnNode` does only need to evaluate its child node `expr`, which is marked
+as usual with `@Child`, and then it uses the result to create a new
+`ReturnException`. And that's it.
+
+Moving on in the debugger, should get us back to the 
+`visitConditionalBranching(.)` method, and 
+
+ <!--
+-> and the else node
+   
+   -> return exception???
+
+
+
+
+    eventually: creating truffle function
+      - functions are going to require stack frames for storing local variables
+        -> that's done with the VirtualFrame class in truffle
+        -> they model variables based on `FrameSlot`s, which eventually also
+           can track types
+        -> we need in the first step a FrameDescriptor, which keeps track of
+           the set of variables for us
+        -> the end result, will be assembled as a `Function` object
+          -> subclass of `RootNode`, Truffle's entry point into the execution
+             model
+          -> in our case, the node is associated with the `GoloFunction for debugging`
+          -> and otherwise just has an expression node as body
+          
+            -> catch ReturnException, see **AST Control-Flow**:
+
+
+
+
+  -> interpretation mindset vs. compilation mindset
+    
+
+
+
+
+
+
+- step 4: make mandelbrot work
+
+- step 5: optimize
+
+
+get graal
+http://lafo.ssw.uni-linz.ac.at/builds
+
+Needs -G:GraphPE to avoid NPE
+
+graalvm-jdk1.8.0/bin/java -G:-GraphPE -Xms256m -Xmx1024M -Xss1024M -Xbootclasspath/a:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/truffle-api-0.8.jar -classpath /Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/golo-3.0.0-incubation-SNAPSHOT.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/asm-5.0.4.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/jcommander-1.48.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/txtmark-0.13.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/json-simple-1.1.1.jar fr.insalyon.citi.golo.cli.Main golo --truffle --files samples/mandelbrot.golo
+--> 
+
+[0]: http://todo
+[1]: http://lafo.ssw.uni-linz.ac.at/builds
+[2]: https://github.com/smarr/golo-lang/commit/7bfb2077fce0af7eb59f89de97014d89d2c1e42b#diff-e689f3cf6b37868e27f7b42d13cfc3a1R43
+[3]: https://github.com/smarr/golo-lang/commit/c7ae9dadfbf7637a3b28d3cdee95dc3dce05a479
+[4]: https://github.com/smarr/golo-lang/commit/2555d36ab4bb1b70c474a0f5daab5572bbde14ef#diff-cf9331a1bfcb60bdcce419870c115221R56
