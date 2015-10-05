@@ -1,3 +1,8 @@
+<script type="text/javascript" src="http://stefan-marr.de/renaissance/code/shCore.js"></script>
+<script type="text/javascript" src="http://agorbatchev.typepad.com/pub/sh/3_0_83/scripts/shBrushJava.js"></script>
+<link type="text/css" rel="stylesheet" href="http://stefan-marr.de/renaissance/code/shCoreDefault.css"/>
+
+
 <span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
 <style>
 body {counter-reset: h2}
@@ -364,8 +369,27 @@ public class ReturnNode extends ExpressionNode {
 as usual with `@Child`, and then it uses the result to create a new
 `ReturnException`. And that's it.
 
-Moving on in the debugger, should get us back to the 
-`visitConditionalBranching(.)` method, and 
+
+<script type="text/javascript">
+var langs = ["gradle", "golo", "java"];
+
+for (var j = 0; j < langs.length; j++) {
+  var lang = langs[j];
+  var snippets = document.getElementsByClassName(lang);
+  while (snippets.length) {
+    var cur = snippets[0];
+    var p = cur.parentNode;
+    p.className += "brush: java; toolbar: false;"
+    
+    while (cur.childNodes.length) {
+        p.appendChild(cur.firstChild);
+    }
+    cur.remove();
+  }
+}
+
+SyntaxHighlighter.all();
+</script>
 
  <!--
 -> and the else node
