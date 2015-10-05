@@ -27,22 +27,25 @@ Truffle-lize Your Language Implementation in 5 Easy Steps
 # Step 3: Initial Infrastructure and Supporting a Simple Fibonacci Function
 
 First, a word of warning. This post is much longer than I had hoped. The goal
-is to add merely enough support to Golo to be able to execute a Fibonacci
-function with Truffle. However, this means, we need to touch most of the basic
-concepts. And in the Golo implementation that corresponds to a patch that is
-about 1500 LOC large. So please bear with me, this could get a little
-long-winded. In case you missed the previous posts, this series starts with a
-[brief intro and motivation][0].
+for today is to be able to execute a Fibonacci function with Golo+Truffle.
+However, this means, we need to get acquainted with most of the basic concepts.
+And in the Golo implementation that corresponds to a patch that is about 1500
+LOC large. So please bear with me, this could get a little long-winded.
+
+In case you missed the previous posts, this series starts with a [brief intro
+and motivation][0].
 
 ## Adding Basic Truffle Support
 
-The first step for us is to configure the build system to include the Truffle
+The first step is to configure the build system to include the Truffle
 dependencies. As of this writing, the latest released of Truffle and Graal is
 version 0.8 ([binary builds][0]).
 
-Since Golo uses Gradle as build system, we add a plugin to the `build.gradle`
-configuration to enable annotation processing support, which is required for
-the TruffleDSL, as well as the Truffle jars:
+We will need the basic Truffle libraries as well as the TruffleDSL, which will
+make it later easier to implement the basic operations for our interpreter.
+Since Golo uses Gradle as build system, the Truffle jar is added as a `compile`
+dependency. We also need to add a plugin to the `build.gradle` configuration to
+enable annotation processing support, which is used by the TruffleDSL:
 
 ```gradle
 plugins {
@@ -59,6 +62,8 @@ dependencies {
 }
 ```
 
+## Working in the Debugger
+
 The next step might seem superflous, but it is going to be extremely useful.
 The first class we add to the Golo codebase is a `NotYetImplemented` exception:
 
@@ -74,26 +79,27 @@ then start hacking there. The debugger then can just tell me what arguments I
 got, their values, etc. Trivial, but very convenient in ~~an unknown~~ any
 codebase.
 
+## Converting Golo's IR to a Truffle AST
+
 The next step is to add an option to Golo's start mechanism to convert the Golo
 IR not into bytecodes but to give us a Truffle AST that can be executed. For
-that, we add a `--truffle` option to the `golo` command. If we pass it on the
+that, we add a `--truffle` option to the `golo` command. If we set it on the
 command line, Golo will parse the files as normal and then use a visitor to
 convert the resulting `GoloModule` into a set of Truffle-based functions/ASTs 
 (cf. [change set][2]).
 
-## Concerting Golo's IR to a Truffle AST
+The resulting `GoloModule`s contain an IR (intermediate representation) that is
+already pretty high-level, and it would require only small changes to be
+compatible with Truffle. However, for clarity and to avoid artifacts that are
+not really idiomatic in Truffle, I chose to keep the IR and the Truffle AST
+clearly separated. In a practical system, it might not be necessary. 
 
-For Golo, I chose the approach of implementing a visitor over Golo's IR. The IR
-is already pretty high-level, and it could have been slightly changed to be
-compatible with Truffle. But, to avoid any unclear and unidiomatic artifacts, I
-chose to keep the IR and the Truffle AST clearly separated. For this post, this
-helps to make things clearer. In a practical system, it might not be necessary.
-So, the only [change we apply to the Golo IR][3] is to add `accept(.)` methods
-which perform a double dispatch to the corresponding method in the
-`TruffleGenerationGoloIrVisitor`. In a first step, the visitor could be left
-almost empty and just needs visitor methods for all IR elements, which in
-return can raise the `NotYetImplemented` exception. The full visitor was added
-with this [change][4].
+As a result of separating the Truffle trees from the IR, we only need to [add
+`accept(.)` methods to the IR][3]. They perform a double dispatch to the
+corresponding method in the `TruffleGenerationGoloIrVisitor`. In a first step,
+the visitor could be left almost empty and just needs visitor methods for all
+IR elements, which in turn can raise the `NotYetImplemented` exception. The
+full visitor was added with this [change][4].
 
 ### Creating a Truffle AST at Runtime
 
@@ -116,31 +122,34 @@ function main = |args| {
 }
 ```
 
-This is a simple recursive version of Fibonacci. We got multiple function calls,
-function arguments, control flow constructs, and basic arithmetic operations.
-Sounds simple, but will keep us busy for the rest of the post.
+This is a simple recursive version of Fibonacci. To run it with Truffle, we
+need to implement function calls, function arguments, control flow constructs,
+and basic arithmetic operations. Sounds simple, but it will keep us busy for
+the rest of this post.
 
-The debugger should have hit by now the first `NotYetImplemented` exception in
-the visitor method for modules. Ignoring some Golo detail, for the moment it is
-sufficient to iterate over all `GoloFunction`s and visit them one by one. The
-corresponding `visitFunction(.)` eventually needs to assemble a
-Truffle-compatible function, but following the relevant execution flow, we
-first will transform the function's block, i.e., its body to a Truffle AST and
-worry about the details here later.
+By now, the debugger should have hit the first `NotYetImplemented` exception in
+the visitor method for modules. Ignoring some Golo detail, it is sufficient to
+iterate over all `GoloFunction`s and visit them one by one. The corresponding
+`visitFunction(.)` eventually needs to assemble a Truffle-compatible function.
+But, following the relevant execution flow in the debugger, we first transform
+the function's block, i.e., its body to a Truffle AST and worry about the
+details of creating a function later.
 
-### Basic Truffle Mechanisms: Nodes, Execute Methods, TypeSystems, and Frames
+### Basic Truffle Mechanisms: Nodes, `execute*()` Methods, TypeSystems, and Frames
 
-For the body of the function, we need a common root node for all possible AST
-nodes. In the IR, the corresponding class is essentially `GoloStatement`. For
-our purposes we add `ExpressionNode`, which needs to extend Truffle's `Node`
-class. Furthermore, it needs to provide a set of `execute*(frame)` methods.
-
-The `execute*()` methods implement the semantics of an AST node. To be able to
-specialize the behavior of a node on the kind of value it should return, the
-`ExpressionNode` provides a set of basic implementations for all the types we
-want to be able to specialize on. These types are communicated explicitly to
-the TruffleDSL to facilitate code generation. We do this with the following
-`Types` class:
+The first element we need is a common root node for all possible AST nodes. In
+Golo's IR, the corresponding class is essentially `GoloStatement`. For our
+purposes we add `ExpressionNode`,<sup>1</sup><span class="sidenote"
+style="position: absolute; padding-left: 44em; width: 10em; font-size: 80%; text-align: left; display: block;"><sup>1</sup>
+We use the term *expression* here, because most nodes will need to
+provide a return value for the `execute*()` methods.</span> which needs to
+extend Truffle's `Node` class. This `ExpressionNode` needs to provide a set of
+`execute*(frame)` methods. The `execute*()` methods implement the semantics of
+an AST node. To be able to specialize the behavior of a node on the kind of
+value it should return, the `ExpressionNode` provides a set of basic
+implementations for all the types we want to be able to specialize on. These
+types are communicated explicitly to the TruffleDSL to facilitate code
+generation. We do this with the following `Types` class:
 
 ```java
 @TypeSystem({
@@ -152,9 +161,11 @@ public class Types { }
 ```
 
 With the `@TypeSystem` annotation, we list `int`, `boolean`, and `Object[]` as
-the three types of interest. The object array, we are using for arguments to
-function calls. And other than that, our Fibonacci program only knows integers
-and booleans so far. For the `ExpressionNode` class, we need the following code:
+the three types of interest. Note, the object array is going to be used only
+for arguments to function calls. Because, our Fibonacci program only needs
+integers and booleans as supported data types.
+
+For the `ExpressionNode` class, we need the following code:
 
 ```java
 public abstract class ExpressionNode extends Node {
@@ -174,25 +185,29 @@ public abstract class ExpressionNode extends Node {
 }
 ```
 
-Note the abstract `executeGeneric(frame)` method. It is the generic execute
-method each node needs to implement. The other three type-specific methods can
-be implemented if it makes sense for a node. Otherwise, the fallback
-implementation provided here will call `executeGeneric(.)`, and then check that
-the result is of the expected type. This mechanism is useful for optimistic,
-i.e., speculative optimizations, which might not hold for all future executions
-of a node. We'll go into more details on this later. One might also notice the
-`frame` argument. The frame is the activation record of a Truffle function and
-is used to access the actual arguments to a function call, local variables, and
-other state a language implementation might need in the scope of a function.
-Later we will see the argument access. For the other aspects, please see a
-later post in this series.
+Note the abstract `executeGeneric(frame)` method on the second line. It is the
+generic execute method each node needs to implement. The other three
+type-specific methods can be implemented if it makes sense for a node.
+Otherwise, the fallback implementation provided here will call
+`executeGeneric(.)`, and then check that the result is of the expected type.
+This mechanism is useful for optimistic, i.e., speculative optimizations, which
+might not hold for all future executions of a node. We'll go into more details
+on this later.
 
-**Sequences**: Now with the `ExpressionNode` in place, we can go and transform
-the body of the `GoloFunction`, which is called a *block* and corresponds to a
-distinct lexical scope in Golo. In our case, this block contains only the `if
-... {} else {}` construct of the `fib` function, which needs to be visited.
-Once this is complete expressions of the block are wrapped by a `SequenceNode`,
-which holds them as child nodes:
+One might also notice the `frame` argument. The frame is the activation record
+of a Truffle function and is used to access the actual arguments to a function
+call, local variables, and other state a language implementation might need in
+the scope of a function. Later we will see the argument access. For the other
+aspects, please see a later post in this series.
+
+#### Sequences
+
+With the `ExpressionNode` in place, we can now transform the body of the
+`GoloFunction`, which is called a *block* and corresponds to a distinct lexical
+scope in Golo. To represent the content of such blocks, which can be multiple
+expressions, we use the following `SequenceNode` that holds
+the expressions as child nodes:
+
 
 ```java
 public final class SequenceNode extends ExpressionNode {
@@ -212,30 +227,40 @@ public final class SequenceNode extends ExpressionNode {
 }
 ```
 
-For the Truffle framework, it is important here that the `expressions` field of
-the class is annotated with `@Children` so that specializations are handled
+For the Truffle framework, it is important that the `expressions` field of the
+class is annotated with `@Children` so that specializations are handled
 correctly and so that the Graal compiler knows these expressions can be
 considered constant. The `final` keyword is here not strictly necessary, but it
-is good practice to make the array final to avoid it being exchanged with
+is good practice to make the array final to avoid it being replaced with
 another array that might have a different length.
 
-The `executeGeneric(.)` method uses these child expressions by iterating over
-them and recursively calling `executeGeneric(.)`. For the last expression, we
-actually care about the computed value and return it. For optimizations, it is
-also necessary to tell Graal that the loop here needs to be unrolled, i.e.,
-*exploded*. This makes sure that none of the calls to `executeGeneric(.)` have
-to be treated as polymorphic, but that they can be inlined, which enables many
-common compiler optimizations.
+The `executeGeneric(.)` method iterates of these child expressions and
+recursively calls `executeGeneric(.)`. For the last expression, we actually
+care about the computed value and return it. For optimizations, it is also
+necessary to tell Graal that the loop here needs to be unrolled by using the
+`@ExplodeLoop` annotation. This makes sure that none of the calls to
+`executeGeneric(.)` have to be treated as polymorphic, but that they can be
+inlined, which enables many common compiler optimizations. The unrolling is safe
+here, because the number of statements in a block is lexically defined, and thus
+constant. Depending on language semantics, this might for instance also apply
+to the processing of function arguments as we will see later.
 
-**Argument Reads**: Continuing in the debugger with step-by-step transforming
-out `fib` function, the important element is going to be the conditional
-branch, which is transformed to Truffle nodes in the
+Note, while stepping through the debugger, the block we encountered should be
+the on that contains the `if ... {} else {}` construct of the `fib` function,
+which we dive into now.
+
+#### Argument Reads
+
+Continuing from the `visitBlock(.)` function in the debugger, transforming our
+`fib` function step-by-step, the next element is going to be the conditional
+branch. It is transformed to Truffle nodes in the
 `visitConditionalBranching(.)` method. As a first step, we visit the condition
-`n < 2`. When diving into it, the left operand is a argument read of `n`. As
-mentioned earlier, function arguments are passed as `Object[]` arrays and are
-then available in the frame. We add the `LocalArgumentReadNode` class to read
-such arguments. The node keeps the index of the argument it corresponds to, and
-on execution, simply accesses the array and returns the value:
+`n < 2`. When stepping into it, the left operand is a argument read of `n`. As
+mentioned earlier, function arguments are passed as `Object[]` arrays in the
+frame, i.e., activation record of the function. To access them, we add the
+`LocalArgumentReadNode` class, which is sketched below. Such a node keeps the
+index of the argument it corresponds to, and on execution, simply accesses the
+array from the frame object and returns the value:
 
 ```java
 public class LocalArgumentReadNode extends ExpressionNode {
@@ -251,10 +276,14 @@ public class LocalArgumentReadNode extends ExpressionNode {
 }
 ```
 
-**Literals**: The right operand is a literal integer `2`, and the node is
-simply returning the value. Note, for the compiler later on, it is important
-that the field in which the value is stored is `final`. This ensures that the
-compiler can treat the value as constant to enable optimizations.
+#### Literals
+
+The right operand is a literal integer `2`. Literal nodes are the simplest
+nodes we have, because it is simply returns the stored value. For Golo+Truffle,
+we add the `IntegerLiteralNode` below. Note, for the compiler later on, it is
+important that the `val` field in which the value is stored is `final`. This
+ensures that the compiler can treat the value as constant to enable
+optimizations.
 
 ```java
 public class IntegerLiteralNode extends LiteralNode {
@@ -274,8 +303,10 @@ public class IntegerLiteralNode extends LiteralNode {
 }
 ```
 
-The comparison is implemented as `LessThanNode`. For convenience, we extend the
-`BinaryNode` class:
+#### Node Children and Specializations
+
+The comparison operation itself is implemented as `LessThanNode`. For
+convenience, we extend the `BinaryNode` class below:
 
 ```java
 @NodeChildren({
@@ -285,14 +316,14 @@ The comparison is implemented as `LessThanNode`. For convenience, we extend the
 public abstract class BinaryNode extends ExpressionNode { }
 ```
 
-**Node Children**: `BinaryNode` is a purely abstract classes without concrete
-implementation. Its main use is to provide the left and right subnodes, i.e.,
-node children by using the TruffleDSL. As the code above shows, we use the
-`@NodeChildren` annotation with two `@NodeChild annotations that define left
-and right to be of type `ExpressionNode`. The main benefit of using the DSL is
-that it will now generate the boilerplate code for specializations and handling
-many of the common issues for optimistic optimizations. In our specific case
-here, it enables use to implement the `LessThanNode` with the following code:
+The `BinaryNode` is an abstract classes without any methods. Its
+main use is to provide the left and right subnodes, i.e., node children by
+using the TruffleDSL. As the code above shows, we use the `@NodeChildren`
+annotation with two `@NodeChild` annotations that define left and right to be
+of type `ExpressionNode`. The main benefit of using the DSL is that it will now
+generate the boilerplate code for specializations and handling many of the
+common issues for optimistic optimizations. In our specific case here, it
+enables use to implement the `LessThanNode` with the following code:
 
 ```java
 public abstract class LessThanNode extends BinaryNode {
@@ -304,9 +335,9 @@ public abstract class LessThanNode extends BinaryNode {
 }
 ```
 
-**Specializations**: Note that `LessThanNode` is again an `abstract` class.
+Note that `LessThanNode` is again an `abstract` class.
 However, it provides the `doIntegers` methods that is annotated with
-`@Specialization`. This means, the DSL will generate the necessary code to
+`@Specialization`. This means, the DSL will generate the code to
 evaluate the `left` and `right` subexpressions of the `<` operation, which in
 our case are an argument read and an integer literal. If the evaluation returns
 the expected integers, it will make sure that the AST is rewritten to use the
@@ -315,21 +346,41 @@ the expected integers, it will make sure that the AST is rewritten to use the
 this behavior is *good enough*. For a complete Golo implementation, we would of
 course need to provide the other necessary specializations as well.
 
-At this point, I still want to point out that the signature of `doIntegers` as
+At this point, note that the signature of `doIntegers` as
 well as the return type of `executeInteger(.)` uses the primitive `int` and
 thus avoids boxing of the integer.
 
-**AST Control-Flow**: After completing the condition, we are back in the
+#### Control Flow: The `return` Keyword
+
+After completing the condition, we are back in the
 `visitConditionalBranching(.)` method with the debugger. The next element, for
-which we need to provide an implementation is the going to be the *then*-branch
-of the condition. Stepping into it, we reach the `visitReturnStatement(.)`
-method. In our `fib` function, we know this is the `return n` branch. So, there
-will be an argument read again, which we already covered. Thus, let's focus on
-the return itself. If one imagines what happens when executing an AST as we
-build it, then there seems to be an issue of how we can return from such a
-nested node back to the function node that is executing somewhere on the Java
-stack. Turns out, the solution can rely on Java exceptions. In the Truffle
-framework, we got the `ControlFlowException`, which we subclass as follows:
+which we need to provide an implementation is the *then*-branch of the
+condition. Stepping into it, we reach the `visitReturnStatement(.)` method. In
+our `fib` function, we know this is the `return n` branch. So, there will be an
+argument read again, which we already covered. Thus, we can focus on the return
+itself.
+
+Imagine for a moment what happens when we execute the kind of AST that we are
+just building up. The Java stack trace might look something like this:
+
+```java
+ReturnNode.executeGeneric()
+Sequence.executeGeneric()
+IfNode.executeGeneric()
+Sequence.executeGeneric()
+Function.execute()
+```
+
+At the bottom of the stack, we see the function call itself, and then we see
+the different AST nodes with their `executeGeneric()` methods executing. At the
+top, we see the node that corresponds to the `return` operation we want to
+implement. So, how can we return from this node back to the function and at the
+same time also pass the desired return value? In Truffle, the solution is
+rather straightforward and uses `ControlFlowException`s. The class
+`ControlFlowException` is optimized for the use in interpreters and minimizes
+the cost of an exception at runtime. Thus, we subclass it with the following
+`ReturnException`:
+
 
 ```java
 public class ReturnException extends ControlFlowException {
@@ -347,9 +398,10 @@ public class ReturnException extends ControlFlowException {
 
 This `ReturnException` takes the result we want to return from the function,
 and when it is thrown, it will unwind the Java stack for us. Thus, we only need
-to make sure that we catch it later on in the function that we still need to
-create. But more on that later. Next to the `ReturnException`, we also need the
-corresponding AST node:
+to make sure that we catch it later on in the `Function` class that we still
+need to implement. More on that later. 
+
+In addition to the `ReturnException`, we also need the corresponding AST node:
 
 ```java
 public class ReturnNode extends ExpressionNode {
