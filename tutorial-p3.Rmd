@@ -418,8 +418,231 @@ public class ReturnNode extends ExpressionNode {
 ```
 
 `ReturnNode` does only need to evaluate its child node `expr`, which is marked
-as usual with `@Child`, and then it uses the result to create a new
-`ReturnException`. And that's it.
+with `@Child`. It uses the result to create a new `ReturnException`, which is
+thrown to unwind the stack and return from the function.
+
+#### Addition and Subtraction Operators
+
+Moving on in the debugger should get us back to the
+`visitConditionalBranching(.)` method, which we continue to transform by
+processing the else branch: `return fib(n - 1) + fib(n - 2)`. Handling the
+`return` was just covered. So, the next elements of interest are the binary
+operators `+` and `-`. They are implemented essentially in the same way as the
+less-than operator `<`. We use the TruffleDSL and it's support for
+specializations:
+
+```java
+public abstract class PlusNode extends BinaryNode {
+  @Specialization
+  public int doIntegers(final int left, final int right) {
+    return left + right;
+  }
+}
+
+public abstract class MinusNode extends BinaryNode {
+  @Specialization
+  public int doIntegers(final int left, final int right) {
+    return left - right;
+  }
+}
+```
+
+Both nodes are implemented as subclasses of `BinaryNode` and provide the
+specialized behavior for adding or subtracting integers. With this minimalism,
+the same caveats apply as for the `LessThanNode`.
+
+#### Function Arguments
+
+More interesting than these operators are the `fib(.)` function invocations. As
+first step in `visitFunctionInvocation(.)`, we need to transform the argument
+expression of the function call. Ignoring Golo's named arguments, we can
+transform the argument expressions into a plain `ExpressionNode[]`. To avoid
+having different function invocation nodes for different number of arguments,
+we introduce a `EvalArgumentsNode` that will create an array of objects that is
+passed to the function call. That's also the reason why we needed the
+`Object[]` type in our `Types` class earlier.
+
+```java
+public class EvalArgumentsNode extends ExpressionNode {
+  @Children protected final ExpressionNode[] argumentNodes;
+
+  public EvalArgumentsNode(ExpressionNode[] argumentNodes) {
+    this.argumentNodes = argumentNodes;
+  }
+
+  @ExplodeLoop
+  public Object[] executeObjectArray(VirtualFrame frame) {
+    Object[] arguments = new Object[argumentNodes.length];
+    for (int i = 0; i < argumentNodes.length; i++) {
+      arguments[i] = argumentNodes[i].executeGeneric(frame);
+    }
+    return arguments;
+  }
+
+  public Object executeGeneric(VirtualFrame frame) {
+    return executeObjectArray(frame);
+  }
+}
+```
+
+The implementation of `EvalArgumentsNode` is very similar to the one of
+`SequenceNode`. The main difference is that we create an `Object[]` array that
+captures the actual argument values for the call. Note again that the
+`argumentNodes` field is annotated with `@Children` and the
+`executeObjectArray(frame)` method is annotated with `@ExplodeLoop` to help the
+optimizers.
+
+#### Function Invocation
+
+<span style="color: red;">------SECOND PASS STARTS HERE------</span>
+
+Once we got the `EvalArgumentsNode` object, we can create the actual
+`FunctionInvocationNode`. This one is quite a bit more complex than any of the
+nodes we had before. Before we start looking at it, note that we care for the
+moment only about simple function invocation to targets that can be resolved
+statically. Thus, we do not support any form of polymorphism yet. This also
+means that we are going to implement the node manually. The TruffleDSL provides
+with the `@Cached` mechanism a nice way of implementing custom polymorphic
+inline caches. But, here this approach would be more complicated without
+providing a benefit.
+
+Before we go into the details, let's back up even more. One of the main
+assumptions for self-optimizing interpreters in the Truffle style is that
+self-optimizations are designed so that they always have *converging*, i.e.,
+stabilizing behavior. To be able to generate native code, we need to avoid
+getting into an endless loop of back and forth switching between different
+optimizations. Thus, one needs to design node specializations as a state
+machine that will reach a final state within a finite and small number of steps.
+
+With this in mind, let's have a look at what we need to do for the function
+invocation. As already mentioned, we do not support polymorphic functions. And
+for our Fibonacci example, we have two cases. The first one is the call to the
+`fib(.)` function itself, which we just hit in the debugger. And the second one
+is the call to the `println(.)` function, which we need later to generate
+output on the terminal. The `fib(.)` function is going to be resolved
+statically, and `println(.)` is a method on Golo's `Predefined` class, which
+provides such convenience methods. We will handle `println(.)` specially, just
+to show a little more what we can do with Truffle. So, overall, we got three
+cases to cover. The initial function invocation node that is uninitialized, a
+normal static function call, and well-know builtins that we want to treat
+specially. This means, we can design a node that goes from an uninitialized
+case to either of the two specializations depending on the result of a lookup
+function.
+
+We'll start with the abstract `FunctionInvocationNode`:
+
+```java
+abstract class FunctionInvocationNode extends ExpressionNode implements PreEvaluated {
+  protected final String name;
+  protected final GoloModule module;
+
+  @Child protected EvalArgumentsNode argumentsNode;
+
+  FunctionInvocationNode(String name, GoloModule module, EvalArgumentsNode argumentsNode) {
+    this.name          = name;
+    this.module        = module;
+    this.argumentsNode = argumentsNode;
+  }
+
+  public abstract Object executeEvaluated(VirtualFrame frame, Object[] args);
+
+  public Object doEvaluated(VirtualFrame frame, Object[] args) {
+    return executeEvaluated(frame, args);
+  }
+
+  public Object executeGeneric(final VirtualFrame frame) {
+    Object[] args = argumentsNode.executeObjectArray(frame);
+    return executeEvaluated(frame, args);
+  }
+}
+```
+
+It is a subclass of `ExpressionNode` and as such we implement
+`executeGeneric(frame)`. Furthermore, we implement argument evaluation here,
+since it is always the same independently of how an invocation is done. Thus,
+we take the `argumentsNode` and ask it to evaluate to an `Object[]`, which it
+will by construction (see the just implemented `EvalArgumentsNode`). With the
+result, we call `executeEvaluated(frame, args)`. This method is a convention
+that is also used by the DSL. The idea is that a node will first evaluate all
+child nodes, and then at some point execute the node's own logic. In this case,
+we only provide an abstract method that is implemented in the concrete
+subclasses. Note also that we implemented an interface `PreEvaluated`, which
+gives us a way to always execute only the node-specific behavior without
+evaluating child nodes. This is useful for instance during specializing a node.
+First we need to evaluate the child nodes to be able to determine the
+applicable specialization, and then we want to execute only the node-specific
+behavior. Since Golo has side-effects, just repeating the evaluation of the
+child nodes could be incorrect.
+
+For the function invocation, in code this looks as follows:
+
+```java
+class UninitializedInvocationNode extends FunctionInvocationNode {
+
+  UninitializedInvocationNode(String name, GoloModule module,
+      EvalArgumentsNode argumentsNode) {
+    super(name, module, argumentsNode);
+  }
+
+  public Object executeEvaluated(VirtualFrame frame, Object[] args) {
+    return specialize(args).
+        doEvaluated(frame, args);
+  }
+
+  private PreEvaluated specialize(Object[] args) {
+    Object lookupResult = lookup(args);
+
+   if (lookupResult instanceof Function) {
+      return replace(new DirectFunctionInvokeNode(this, (Function) lookupResult));
+    } else if (lookupResult instanceof PreEvaluated) {
+      return (PreEvaluated) replace((ExpressionNode) lookupResult);
+    }
+    throw new NotYetImplemented();
+  }
+
+  private Object lookup(final Object[] args) {
+    // ...
+  }
+}
+```
+
+Our `UninitializedInvocationNode` class implements the abstract
+`executeEvaluated` method. As discussed, it already gets the evaluated
+arguments, passes them to the `specialize(.)` function, and then delegates the
+evaluation to the resulting node by calling `doEvaluated(.,.)`. The
+`specialize(.)` function performs the lookup, and then based on the lookup
+result, it choses an appropriate implementation for the invocation. At this
+point, we only need the two previously discussed ways for invocation. The
+first one is the `DirectFunctionInvokeNode`. In case the lookup result was a
+Golo+Truffle function, we instantiate the invocation node and replace the
+`UninitializedInvocationNode` node, i.e., the current `this` with it.
+
+In case the lookup result is some node that implements the `PreEvaluated`
+interface, we use it immediately to replace the current node.
+
+#### Truffle Direct Function Invocation
+
+The first concrete
+
+```java
+class DirectFunctionInvokeNode extends FunctionInvocationNode {
+  @Child protected DirectCallNode call;
+
+  protected DirectFunctionInvokeNode(FunctionInvocationNode uninit, Function function) {
+    super(uninit.name, uninit.module, uninit.argumentsNode);
+    call = Truffle.getRuntime().createDirectCallNode(
+                function.getCallTarget());
+  }
+
+  public Object executeEvaluated(VirtualFrame frame, Object[] args) {
+    return call.call(frame, args);
+  }
+}
+```
+
+------here------
+TODO: IfThen node???
+
 
 
 <script type="text/javascript">
