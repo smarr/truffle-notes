@@ -574,7 +574,7 @@ applicable specialization, and then we want to execute only the node-specific
 behavior. Since Golo has side-effects, just repeating the evaluation of the
 child nodes could be incorrect.
 
-For the function invocation, in code this looks as follows:
+For the specialization of function invocations, the code looks as follows:
 
 ```java
 class UninitializedInvocationNode extends FunctionInvocationNode {
@@ -620,15 +620,22 @@ Golo+Truffle function, we instantiate the invocation node and replace the
 In case the lookup result is some node that implements the `PreEvaluated`
 interface, we use it immediately to replace the current node.
 
-#### Truffle Direct Function Invocation
+#### Invoking Truffle Functions
 
-The first concrete
+The `DirectFunctionInvokeNode` only has to perform the actual function
+invocation. As discussed earlier, here we only handle cases that are statically
+resolved. Thus, there is no further dynamicity that needs to be handled. The
+only *special* thing we have to do is to use Truffle's mechanism to function
+invocation so that the Truffle framework can apply optimizations such as
+*splitting* and *inlining*. To this end, the following implementation uses a
+`DirectCallNode`:
 
 ```java
 class DirectFunctionInvokeNode extends FunctionInvocationNode {
   @Child protected DirectCallNode call;
 
-  protected DirectFunctionInvokeNode(FunctionInvocationNode uninit, Function function) {
+  protected DirectFunctionInvokeNode(
+      FunctionInvocationNode uninit, Function function) {
     super(uninit.name, uninit.module, uninit.argumentsNode);
     call = Truffle.getRuntime().createDirectCallNode(
                 function.getCallTarget());
@@ -640,9 +647,145 @@ class DirectFunctionInvokeNode extends FunctionInvocationNode {
 }
 ```
 
-------here------
-TODO: IfThen node???
+The `DirectCallNode` caches the so-called `CallTarget`. `CallTarget`'s are
+Truffle's notion of invokable or callable entities. Thus, they are the
+executable elements, and define the calling convention. Without going into the
+details of the `Function` implementation already, our Truffle `Function`s will
+cache such a `CallTarget` that is used in `DirectCallNode`s. These nodes are
+created, as shown here, by the Truffle runtime. They represent statically bound
+calls, and communicate this knowledge to the compiler.<sup>2</sup><span
+class="sidenote" style="position: absolute; padding-left: 44em; width: 10em;
+font-size: 80%; text-align: left; display: block;"><sup>2</sup> They can also
+be used, for instance in combination with the `@Cached` annotation to build
+polymorphic inline caches.</span> Incase a call-site is highly variable
+(megamorphic), i.e., corresponds to many different functions, we could use the
+`IndirectCallNode` instead. In that case, the optimizer would not try to
+perform inlining, because it would most likely be counterproductive and could
+slow down execution.
 
+With the support for function invocation in place, we can transform the
+remainder of the `fib()` function. Stepping through the debugger should
+eventually lead us back to `visitReturnStatement()` where the `ReturnNode` for
+the else branch is create. After this is done, we are finally back at
+`visitBlock(.)`, where the `SequenceNode` for the block of the else branch is
+created.
+
+#### Control Flow: Conditionals
+
+With the `SequenceNode` for the else branch of the conditional, we finally got
+all elements needed to assemble the conditional itself. It is implemented as
+the following `IfNode` class:
+
+```java
+class IfNode extends ExpressionNode {
+  @Child ExpressionNode condition;
+  @Child ExpressionNode thenNode;
+  @Child ExpressionNode elseNode;
+
+  public IfNode(ExpressionNode condition,
+      ExpressionNode thenNode, ExpressionNode elseNode) {
+    this.condition = condition;
+    this.thenNode  = thenNode;
+    this.elseNode  = elseNode;
+  }
+
+  @Override
+  public Object executeGeneric(VirtualFrame frame) {
+    if (doCondition(frame)) {
+      thenNode.executeGeneric(frame);
+    } else if (elseNode != null) {
+      elseNode.executeGeneric(frame);
+    }
+    return null;
+  }
+
+  private boolean doCondition(VirtualFrame frame) {
+    try {
+      return condition.executeBoolean(frame);
+    } catch (UnexpectedResultException e) {
+      CompilerDirectives.transferToInterpreter();
+      throw new UnsupportedSpecializationException(
+          this, new Node[]{condition}, e.getResult());
+    }
+  }
+}
+```
+
+As one might expect, the `IfNode` got three `@Child` nodes. The `condition`,
+the `thenNode`, and the `elseNode`. In `executeGeneric(.)`, we first evaluate
+the condition, and depending on the result, either the `thenNode` or
+`elseNode`. Note, the `elseNode` is optional. The check here is also not an
+issue for performance, because the compiler knows from the `@Child` annotation
+that it can consider the value of `elseNode` as a constant. Thus, the null
+check will be removed during compilation.
+
+Evaluating the condition is actually a little more complex. The
+`doCondition(.)` method needs to handle the case that the condition does not
+actually return a boolean value. With Golo being a dynamic language, this could
+of course happen at runtime. For our purposes, we do not provide a fallback
+implementation, but instead just raise an error. Hence, if `executeBoolean(.)`
+fails, we catch a `UnexpectedResultException` and simply throw an
+`UnsupportedSpecializationException`.
+
+Note, the first operation in the catch clause is
+`CompilerDirectives.transferToInterpreter()`. This operation makes sure that
+the compiler does not include the catch clause in the compilation. We assume,
+well behaved programs won't use non-boolean conditions and thereby avoid the
+complexity of handling this special case during compilation. Instead, execution
+will simply return to the interpreter, which is slower, but does not prevent
+many essential optimizations to happen for the best-case scenario.
+
+#### Truffle Functions aka `RootNode`s
+
+With the `IfNode` constructed, we finally got all elements for our `fib(.)`
+function transformed to a Truffle representation. Now, we can create the actual
+`Function` object:
+
+```java
+class Function extends RootNode {
+  @Child protected ExpressionNode expr;
+
+  public Function(ExpressionNode expr) {
+    this.expr = expr;
+    Truffle.getRuntime().createCallTarget(this);
+  }
+
+  @Override
+  public Object execute(VirtualFrame frame) {
+    try {
+      return expr.executeGeneric(frame);
+    } catch (ReturnException ex) {
+      return ex.getResult();
+    }
+  }
+}
+```
+
+For the moment, we need to cover three aspects here. The first is that we need
+to subclass Truffle's `RootNode` class, implement its `execute(.)` method, and
+handle the `ReturnException` from earlier. `RootNode` is the framework's class
+to represent the main node of a Truffle function. Its `execute(.)` method takes
+only a `frame` object as argument and is the main entry point for evaluating
+Truffle ASTs. In the case of Golo, a `Function` is simply referring to some
+`ExpressionNode` that we ask to execute. As you can see in the `execute(.)`,
+this is also the right place to handle the `ReturnException`. The `Function` is
+the inner part of the call boundary. Hence, we catch the exception, ask it for
+the result and can than return it. In case there was no exception, we simply
+return the value to which the `expr` node evaluated.
+
+Previously, we also discussed the `CallTarget` as Truffle's mechanism to
+optimize function calls. Since we need a `CallTarget` for each of our Truffle
+functions, we create it in the constructor and it is automatically set on
+`this`, so that it can be used later.
+
+
+------here------
+
+
+-- println node
+   -> creation by lookup function
+   -> argument nodes directly inlined
+   
 
 
 <script type="text/javascript">
@@ -667,11 +810,6 @@ SyntaxHighlighter.all();
 </script>
 
  <!--
--> and the else node
-   
-   -> return exception???
-
-
 
 
     eventually: creating truffle function
@@ -681,15 +819,6 @@ SyntaxHighlighter.all();
            can track types
         -> we need in the first step a FrameDescriptor, which keeps track of
            the set of variables for us
-        -> the end result, will be assembled as a `Function` object
-          -> subclass of `RootNode`, Truffle's entry point into the execution
-             model
-          -> in our case, the node is associated with the `GoloFunction for debugging`
-          -> and otherwise just has an expression node as body
-          
-            -> catch ReturnException, see **AST Control-Flow**:
-
-
 
 
   -> interpretation mindset vs. compilation mindset
