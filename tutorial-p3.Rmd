@@ -778,18 +778,93 @@ optimize function calls. Since we need a `CallTarget` for each of our Truffle
 functions, we create it in the constructor and it is automatically set on
 `this`, so that it can be used later.
 
+#### An Intrinsic Node for Printing
 
-------here------
+With that, we are almost set for executing the Fibonacci program. It remains
+only the `main()` function itself. When discussing function invocation, I
+mentioned that we are going to treat `println(.)` special to show a little more
+of how Truffle works.
 
+As a basic implementation of the printing, we use the following node class:
 
--- println node
-   -> creation by lookup function
-   -> argument nodes directly inlined
-   
+```java
+@NodeChild(value = "expr", type = ExpressionNode.class)
+abstract class UnaryNode extends ExpressionNode { }
+
+abstract class PrintlnNode extends UnaryNode implements PreEvaluated {
+  public abstract Object executeEvaluated(VirtualFrame frame, Object value);
+
+  @Override
+  public Object doEvaluated(VirtualFrame frame, Object[] args) {
+    return executeEvaluated(frame, args[0]);
+  }
+
+  @Specialization
+  public Object printObject(Object obj) {
+    System.out.println(obj);
+    return null;
+  }
+}
+```
+
+First, we define `UnaryNode`, very similar to the previously defined
+`BinaryNode`. It has one node child `expr` and otherwise is an empty abstract
+class. `PrintlnNode` extends `UnaryNode` and implements again the
+`PreEvaluated` interface so that we can use it in the `specialize(.)` method of
+`UninitializedInvocationNode`. We also have the abstract `executeEvaluated(.)`,
+which the DSL is going to generate for us. The actual implementation is done in
+the `printObject(obj)` method, which is annotated with `@Specialization`. Based
+on this specialization, the TruffleDSL generates the missing implementation
+methods, so that we can use the node in the AST.
+
+The question is now, how do we actually create the node. Below we see a snippet
+from the corresponding Golo lookup routine:
+
+```java
+if (importClass == Predefined.class) {
+  switch (lookup) {
+    case "println":
+      return PrintlnNodeGen.create(argumentsNode.getArgumentNodes()[0]);
+  }
+}
+```
+
+Since the `Predefined` class is completely under our control, we can provide
+this node implementation for `println(.)`. In the lookup routine, we test
+whether the class on which the lookup is done is the `Predefined` class, and in
+case it is, and the desired function is `"println"`, we instantiate a
+`PrintlnNode`. Note here that the TruffleDSL generate the implementation with
+the name `PrintlnNodeGen`. This class has a factory method `create(expr)` that
+takes the argument expression. In our case, we execute this code as part of the
+`UninitializedInvocationNode` that has the argument expressions stored in
+`argumentsNode`. So, we can take the corresponding expression from there. Once
+the lookup is done, the create node object has been passed to the
+`specialize(.)`, which will eventually replace the invocation node with our
+new `PrintlnNode`. This means, the print operation is directly inlined in the
+AST.
+
+## Wrap Up and Conclusions 
+
+In this post, many basic Truffle concepts have been introduced. From the basic
+AST nodes, over the design of a AST-based interpreter, arithmetic operations,
+control flow constructs, until function calls, we covered everything we needed
+to execute a simple Fibonacci function.
+
+The code for this post is available on the [truffle/fib][5] branch. With the
+following steps, it should be possible to execute the `fib.golo` program:
+
+```bash
+./gradlew installDist
+build/install/golo/bin/golo golo --truffle --files samples/fib.golo
+```
+
+As the result, it should print `55` and exit cleanly.
+
+   -> interpretation mindset vs. compilation mindset
 
 
 <script type="text/javascript">
-var langs = ["gradle", "golo", "java"];
+var langs = ["gradle", "golo", "java", "bash"];
 
 for (var j = 0; j < langs.length; j++) {
   var lang = langs[j];
@@ -809,41 +884,13 @@ for (var j = 0; j < langs.length; j++) {
 SyntaxHighlighter.all();
 </script>
 
- <!--
-
-
-    eventually: creating truffle function
-      - functions are going to require stack frames for storing local variables
-        -> that's done with the VirtualFrame class in truffle
-        -> they model variables based on `FrameSlot`s, which eventually also
-           can track types
-        -> we need in the first step a FrameDescriptor, which keeps track of
-           the set of variables for us
-
-
-  -> interpretation mindset vs. compilation mindset
-    
-
-
-
-
-
-
-- step 4: make mandelbrot work
-
-- step 5: optimize
-
-
-get graal
-http://lafo.ssw.uni-linz.ac.at/builds
-
-Needs -G:GraphPE to avoid NPE
-
-graalvm-jdk1.8.0/bin/java -G:-GraphPE -Xms256m -Xmx1024M -Xss1024M -Xbootclasspath/a:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/truffle-api-0.8.jar -classpath /Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/golo-3.0.0-incubation-SNAPSHOT.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/asm-5.0.4.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/jcommander-1.48.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/txtmark-0.13.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/json-simple-1.1.1.jar fr.insalyon.citi.golo.cli.Main golo --truffle --files samples/mandelbrot.golo
---> 
+<p style="text-align:center">
+<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Truffle-lize Your Language Implementation in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
+</p>
 
 [0]: http://todo
 [1]: http://lafo.ssw.uni-linz.ac.at/builds
 [2]: https://github.com/smarr/golo-lang/commit/7bfb2077fce0af7eb59f89de97014d89d2c1e42b#diff-e689f3cf6b37868e27f7b42d13cfc3a1R43
 [3]: https://github.com/smarr/golo-lang/commit/c7ae9dadfbf7637a3b28d3cdee95dc3dce05a479
 [4]: https://github.com/smarr/golo-lang/commit/2555d36ab4bb1b70c474a0f5daab5572bbde14ef#diff-cf9331a1bfcb60bdcce419870c115221R56
+[5]: https://github.com/smarr/golo-lang/tree/truffle/fib
