@@ -68,7 +68,7 @@ The next step might seem superflous, but it is going to be extremely useful.
 The first class we add to the Golo codebase is a `NotYetImplemented` exception:
 
 ```java
-public class NotYetImplemented extends RuntimeException {}
+class NotYetImplemented extends RuntimeException {}
 ```
 
 With this class, we can mark all open issues/todo items and make the compilers
@@ -157,7 +157,7 @@ generation. We do this with the following `Types` class:
   boolean.class,
   Object[].class
 })
-public class Types { }
+class Types { }
 ```
 
 With the `@TypeSystem` annotation, we list `int`, `boolean`, and `Object[]` as
@@ -210,15 +210,15 @@ the expressions as child nodes:
 
 
 ```java
-public final class SequenceNode extends ExpressionNode {
+class SequenceNode extends ExpressionNode {
   @Children private final ExpressionNode[] expressions;
 
-  public SequenceNode(final ExpressionNode[] expressions) {
+  public SequenceNode(ExpressionNode[] expressions) {
     this.expressions = expressions;
   }
 
   @ExplodeLoop
-  public Object executeGeneric(final VirtualFrame frame) {
+  public Object executeGeneric(VirtualFrame frame) {
 	for (int i = 0; i < expressions.length - 1; i++) {
       expressions[i].executeGeneric(frame);
     }
@@ -263,7 +263,7 @@ index of the argument it corresponds to, and on execution, simply accesses the
 array from the frame object and returns the value:
 
 ```java
-public class LocalArgumentReadNode extends ExpressionNode {
+class LocalArgumentReadNode extends ExpressionNode {
   protected final int index;
 
   public LocalArgumentReadNode(int index) {
@@ -286,7 +286,7 @@ ensures that the compiler can treat the value as constant to enable
 optimizations.
 
 ```java
-public class IntegerLiteralNode extends LiteralNode {
+class IntegerLiteralNode extends LiteralNode {
   private final int val;
 
   public IntegerLiteralNode(int val) {
@@ -383,7 +383,7 @@ the cost of an exception at runtime. Thus, we subclass it with the following
 
 
 ```java
-public class ReturnException extends ControlFlowException {
+class ReturnException extends ControlFlowException {
   private final Object result;
 
   public ReturnException(Object result) {
@@ -404,14 +404,14 @@ need to implement. More on that later.
 In addition to the `ReturnException`, we also need the corresponding AST node:
 
 ```java
-public class ReturnNode extends ExpressionNode {
+class ReturnNode extends ExpressionNode {
   @Child protected ExpressionNode expr;
 
-  public ReturnNode(final ExpressionNode expr) {
+  public ReturnNode(ExpressionNode expr) {
     this.expr = expr;
   }
 
-  public Object executeGeneric(final VirtualFrame frame) {
+  public Object executeGeneric(VirtualFrame frame) {
     throw new ReturnException(expr.executeGeneric(frame));
   }
 }
@@ -434,14 +434,14 @@ specializations:
 ```java
 public abstract class PlusNode extends BinaryNode {
   @Specialization
-  public int doIntegers(final int left, final int right) {
+  public int doIntegers(int left, int right) {
     return left + right;
   }
 }
 
 public abstract class MinusNode extends BinaryNode {
   @Specialization
-  public int doIntegers(final int left, final int right) {
+  public int doIntegers(int left, int right) {
     return left - right;
   }
 }
@@ -463,7 +463,7 @@ passed to the function call. That's also the reason why we needed the
 `Object[]` type in our `Types` class earlier.
 
 ```java
-public class EvalArgumentsNode extends ExpressionNode {
+class EvalArgumentsNode extends ExpressionNode {
   @Children protected final ExpressionNode[] argumentNodes;
 
   public EvalArgumentsNode(ExpressionNode[] argumentNodes) {
@@ -550,7 +550,7 @@ abstract class FunctionInvocationNode extends ExpressionNode implements PreEvalu
     return executeEvaluated(frame, args);
   }
 
-  public Object executeGeneric(final VirtualFrame frame) {
+  public Object executeGeneric(VirtualFrame frame) {
     Object[] args = argumentsNode.executeObjectArray(frame);
     return executeEvaluated(frame, args);
   }
@@ -600,7 +600,7 @@ class UninitializedInvocationNode extends FunctionInvocationNode {
     throw new NotYetImplemented();
   }
 
-  private Object lookup(final Object[] args) {
+  private Object lookup(Object[] args) {
     // ...
   }
 }
