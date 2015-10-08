@@ -1,0 +1,280 @@
+<script type="text/javascript" src="http://stefan-marr.de/renaissance/code/shCore.js"></script>
+<script type="text/javascript" src="http://agorbatchev.typepad.com/pub/sh/3_0_83/scripts/shBrushJava.js"></script>
+<link type="text/css" rel="stylesheet" href="http://stefan-marr.de/renaissance/code/shCoreDefault.css"/>
+
+
+<span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
+<style>
+body {counter-reset: h2}
+  h2 {counter-reset: h3}
+  h3 {counter-reset: h4}
+  h4 {counter-reset: h5}
+  h5 {counter-reset: h6}
+
+  h2:before {counter-increment: h2; content: counter(h2) ". \a0 "}
+  h3:before {counter-increment: h3; content: counter(h2) "." counter(h3) " \a0 "}
+  h4:before {counter-increment: h4; content: counter(h2) "." counter(h3) "." counter(h4) " \a0 "}
+
+  h2.nocount:before, h3.nocount:before, h4.nocount:before { content: ""; counter-increment: none } 
+</style>
+
+Truffle-lize Your Language Implementation in 5 Easy Steps
+=========================================================
+
+# Step 4: Complete Support for Mandelbrot
+
+In the the [previous post][TODO] of the series, we built up all the
+infrastructure to execute a simple Fibonacci function with a Truffle backend
+for Golo. This included an introduction to the basic aspects of Truffle, its
+support for specializations, the idiomatic ways for realizing sequences,
+control flow, basic operators, and literals. Together with the discussion of
+how function invocation can be implemented, we covered most aspects that
+are required also for our final goal, i.e., to support the execution of the
+Mandelbrot program from the very [first post][TODO] in the series.
+
+Below, the main part of the Mandelbrot program implemented in Java:
+
+```java
+while (y < size) {
+  double ci = (2.0 * y / size) - 1.0;
+  int x = 0;
+
+  while (x < size) {
+    // ...
+    double cr = (2.0 * x / size) - 1.5;
+
+    int z = 0;
+    int escape = 1;
+
+    while (z < 50) {
+      zr = zrzr - zizi + cr;
+      zi = 2.0 * zr * zi + ci;
+
+      zrzr = zr*zr;
+      zizi = zi*zi;
+
+      if (zrzr + zizi > 4.0) {
+        escape = 0;
+        break;
+      }
+// remainder left out for brevity
+```
+
+Since much of what we needed to support Mandelbrot are extensions, or based
+on the same principles that we discussed before, this post will be much shorter
+and only sketch the changes to existing elements. However, we discuss in greater
+detail how to add local variables, a for-loop, and how to call Java functions
+based on method handles.
+
+## Extensions for Longs, Doubles, Strings, and Basic Operations
+
+In a first step, we extend the `Types` class and the `ExpressionNode` to support
+long and double primitives as well as Strings for specialization. The `Types`
+class looks now like this:
+
+```java
+@TypeSystem({
+  int.class,
+  boolean.class,
+  long.class,    // added for Mandelbrot
+  double.class,  // added for Mandelbrot
+  String.class,  // added for Mandelbrot
+  Object[].class
+})
+class Types { }
+```
+
+In the `ExpressionNode`, we merely add the missing `executeLong(.)`,
+`executeDouble(.)`, and `executeString(.)` methods in the same way as the
+existing ones. This will then allow a node to speculate on the child nodes
+always evaluating to for instance a primitive `long` value.
+
+As we can see in the Mandelbrot program above, we also need support for
+literals. Specifically, we are going to add nodes for literal `long`, `double`,
+and `string` values. Furthermore, we add nodes for the `true`, `false`, and
+`null` literals. With the `IntegerLiteralNode` from the last post, we already
+saw the general idea. For `true`, `false`, and `null` it is even simpler, we
+merely return the fixed value on execution. So, it looks like this:
+
+```java
+class NullLiteralNode extends LiteralNode {
+
+  public Object executeGeneric(VirtualFrame frame) {
+    return null;
+  }
+}
+```
+
+Since Mandelbrot is mostly about computation, we also need a range of additions
+and extensions to support multiplication, division, additions, subtraction,
+less-than, equal as well as not-equal. Furthermore, we need to implement the
+Truffle versions of the `xor`, `or`, and `left shift` bit operators.
+
+Below find a sketch of the addition as implemented by the `PlusNode`. The
+sketch shows the support for doubles and strings. Note that is also has a
+`doStringAndDouble(.,.)` method. This is because the child nodes have of course
+different semantics so that we need to specify the desired behavior for all
+combinations as well.
+
+```java
+abstract class PlusNode extends BinaryNode {
+
+  @Specialization
+  public String doStrings(String left, String right) {
+    return left + right;
+  }
+
+  @Specialization
+  public double doDoubles(double left, double right) {
+    return left + right;
+  }
+
+  @Specialization
+  public String doStringAndDouble(String left, double right) {
+    return left + right;
+  }
+  // ... and a few other combinations, incl. int and long
+}
+```
+
+The bit operations are only defined for integers and longs, so the resulting
+`BitXorNode` looks like this:
+
+```java
+abstract class BitXorNode extends BinaryNode {
+  @Specialization
+  public long doLongs(long left, long right) {
+    return left ^ right;
+  }
+
+  @Specialization
+  public int doIntegers(int left, int right) {
+    return left ^ right;
+  }
+}
+```
+
+## Unary Operations: Type Coercions and the `not` Operator
+
+The next item of out list are unary operators for value casting. Specifically,
+we need to implement `intValue(.)` and `doubleValue(.)`. You might remember
+from the last post that we handled the `println(.)` method specially. It is a
+method defined on the Golo's `Predefined` class that takes only one parameter,
+too. Our solution the last time was to create a `PrintlnNode` during the lookup
+and directly replace the `UninitializedInvocationNode` AST node with this node.
+During execution, this has the major advantage that there is no overhead for
+function calls or even argument wrapping. To properly support Mandelbrot in
+Golo, we need explicit coercions for integer and double values. Of course,
+these are simple operations that should not have any overhead. Thus, we use the
+same approach.
+
+The nodes are defined as follows:
+
+```java
+@NodeChild(value = "expr", type = ExpressionNode.class)
+abstract class UnaryNode extends ExpressionNode { }
+
+abstract class IntValue extends UnaryNode implements PreEvaluated {
+
+  abstract Object executeEvaluated(VirtualFrame frame, Object value);
+
+  @Override
+  public Object doEvaluated(VirtualFrame frame, Object[] args) {
+    return executeEvaluated(frame, args[0]);
+  }
+
+  @Specialization
+  public int doDouble(double value) {
+    return (int) value;
+  }
+}
+```
+
+On the first look, this seems to be more complicated than necessary. The reason
+that we implement the `PreEvaluated` interface is because of the way node
+specialization should work. Normally, a `specialize(.)` method will replace the
+old node in the tree and return the new one so that it can be used directly to
+execute (see [previous post][TODO]). However, it needs to take the already
+pre-evaluated arguments. For that purpose, we implement the interface and the
+corresponding `doEvaluated(.)` method. The abstract `executeEvaluated(.)` will
+actually be implemented by the TruffleDSL and we do not have to do that
+manually. The main functionality of the node is realized with the
+specialization `doDouble(.)`, which merely casts the double value to an integer
+value. For the `doubleValue(.)` operation, the implementation is essentially
+the same.
+
+
+- added cast nodes: intValue, doubleValue
+- added support for `not` operator
+
+- introduce local variables
+  - assignment
+
+- for loops, incl. break
+   -> break node, break exception
+   -> Truffle loop node, for on-stack-replacment (long running code in loops)
+
+
+
+- calling java-land methods reflectively
+  -> because we can
+  
+
+
+ <!--
+
+
+    eventually: creating truffle function
+      - functions are going to require stack frames for storing local variables
+        -> that's done with the VirtualFrame class in truffle
+        -> they model variables based on `FrameSlot`s, which eventually also
+           can track types
+        -> we need in the first step a FrameDescriptor, which keeps track of
+           the set of variables for us
+
+
+  -> interpretation mindset vs. compilation mindset
+    
+
+
+
+
+
+
+- step 4: make mandelbrot work
+
+- step 5: optimize
+
+
+get graal
+http://lafo.ssw.uni-linz.ac.at/builds
+
+Needs -G:GraphPE to avoid NPE
+
+graalvm-jdk1.8.0/bin/java -G:-GraphPE -Xms256m -Xmx1024M -Xss1024M -Xbootclasspath/a:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/truffle-api-0.8.jar -classpath /Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/golo-3.0.0-incubation-SNAPSHOT.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/asm-5.0.4.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/jcommander-1.48.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/txtmark-0.13.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/json-simple-1.1.1.jar fr.insalyon.citi.golo.cli.Main golo --truffle --files samples/mandelbrot.golo
+--> 
+
+<script type="text/javascript">
+var langs = ["gradle", "golo", "java", "bash"];
+
+for (var j = 0; j < langs.length; j++) {
+  var lang = langs[j];
+  var snippets = document.getElementsByClassName(lang);
+  while (snippets.length) {
+    var cur = snippets[0];
+    var p = cur.parentNode;
+    p.className += "brush: java; toolbar: false;"
+    
+    while (cur.childNodes.length) {
+        p.appendChild(cur.firstChild);
+    }
+    cur.remove();
+  }
+}
+
+SyntaxHighlighter.all();
+</script>
+
+<p style="text-align:center">
+<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Truffle-lize Your Language Implementation in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
+</p>
