@@ -60,11 +60,11 @@ while (y < size) {
 // remainder left out for brevity
 ```
 
-Since much of what we needed to support Mandelbrot are extensions, or based
-on the same principles that we discussed before, this post will be much shorter
-and only sketch the changes to existing elements. However, we discuss in greater
-detail how to add local variables, a for-loop, and how to call Java functions
-based on method handles.
+Since much of what we needed to support Mandelbrot are extensions, or based on
+the same principles that we discussed before, this post will be much shorter
+and only sketch the changes to existing elements. However, we discuss in
+greater detail how to add local variables, loops, and how to call Java
+functions based on method handles.
 
 ## Extensions for Longs, Doubles, Strings, and Basic Operations
 
@@ -203,14 +203,65 @@ specialization `doDouble(.)`, which merely casts the double value to an integer
 value. For the `doubleValue(.)` operation, the implementation is essentially
 the same.
 
+The `not` operator is handled differently in Golo. Instead of being a function
+invocation, it is a keyword. We will skip over how to add the necessary support
+to the Golo IR to Truffle visitor. In the end, the executing AST node is
+simply this:
 
-- added cast nodes: intValue, doubleValue
-- added support for `not` operator
+```java
+abstract class NotNode extends UnaryNode {
+  @Specialization
+  public boolean doBoolean(boolean value) {
+    return !value;
+  }
+}
+```
+
+## Local Variables
+
+One issue we have kept putting off so far is to support the notion of local
+variables. For our Fibonacci function, we merely needed support for accessing
+arguments (see [pref post, sec. X][TODO]). This was realized by accessing the
+array that is passed on function invocation and is stored in the frame object
+given to the `execute*(.)` methods. Now, we will use these frames to also store
+local variables.
+
+As a little bit of background, frames are the activation records of functions.
+Thus, they keep the temporary state that is needed during the execution of a
+function. This includes access to the actual arguments, local variables, and
+possibly other execution state.
+
+Truffle distinguishes two types of frames, virtual and materialized frames. The
+first type is called *virtual* to indicate that the optimizer will not actually
+create an object for the frame at runtime, instead, it will use the frame to
+figure out the actual data dependencies between operations within a compilation
+unit, i.e., a function and possibly additionally inlined functions. To make
+this reliable the usage of virtual frames is restricted. For instance, they are
+not supposed to be assigned to fields of other objects and cannot be passed to
+methods of objects where Graal cannot determine the concrete method at
+compilation time. Generally, virtual frames cannot *escape* the compilation
+united, because this would mean that they need to be represented as a proper
+object. Materialized frames on the other hand can be used like normal objects.
+They do not underly the same restrictions, but come with a higher runtime cost.
+Materialized frames are useful to implement features like closures.
+
+In addition to giving the compiler the means to determine data dependencies,
+frames are also meant to help it with determining the concrete type information.
+For both reasons, frames come with a `FrameDescriptor`. On the one hand, it
+maintains the structural information about the `slots` of a frame, and on the
+other hand, the frame slots can record type information. For now, we will focus
+on the structural elements, and will ignore the type information.
+
+  
 
 - introduce local variables
   - assignment
 
-- for loops, incl. break
+## Loops
+
+- loops, incl. break
+   -> all types of golo loops are desuggared to a common representation
+      so, while loops as well as for loops are mapped to the same construct
    -> break node, break exception
    -> Truffle loop node, for on-stack-replacment (long running code in loops)
 
