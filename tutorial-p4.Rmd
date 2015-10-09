@@ -234,12 +234,183 @@ maintains the structural information about the `slots` of a frame, and on the
 other hand, the frame slots can record type information. For now, we will focus
 on the structural elements, and will ignore the type information.
 
-  
+What does this mean concretely for our Truffle backend? For our `Function`
+objects it means, we need to give them proper `FrameDescriptor`s so that the
+structure of the frame is known. We do that in our `visitFunction(.)` method:
 
-- introduce local variables
-  - assignment
+```java
+public Function visitFunction(GoloFunction function) {
+  FrameDescriptor frameDesc = new FrameDescriptor();
+  context.frameDescriptors.push(frameDesc);
+
+  ExpressionNode body = function.getBlock().accept(this);
+
+  context.frameDescriptors.pop();
+  return new Function(body, function, frameDesc);
+}
+```
+
+While it is not really necessary for our purposes, we have a stack of
+`frameDescriptors` in the visitor, because Golo supports nested functions.
+And with this stack, we can model the lexical scoping of them correctly.
+
+A bit more interesting is our change in the access for variables:
+
+```java
+public ExpressionNode visitReferenceLookup(ReferenceLookup referenceLookup) {
+  LocalReference reference = referenceLookup.
+          resolveIn(context.referenceTableStack.peek());
+  if (reference.isArgument()) {
+    return new LocalArgumentReadNode(reference.getIndex());
+  } else {
+    FrameSlot slot = getFrameSlot(reference);
+    return LocalVariableReadNodeGen.create(slot);
+  }
+}
+
+FrameSlot getFrameSlot(final LocalReference reference) {
+  return context.frameDescriptors.peek().
+          findOrAddFrameSlot(reference.getName());
+}
+```
+
+When we see that a reference is not an argument, they we create a
+`LocalVariableReadNode`. This read node gets a `FrameSlot` object that is
+created by the frame descriptor based on the name of the variable. Since we do
+not care about type information, for the moment, a frame slot is thus merely
+Truffle's handle to represent the variable.
+
+Assignment statements are transformed similarly:
+
+```java
+public ExpressionNode visitAssignmentStatement(AssignmentStatement assignmentStatement) {
+  LocalReference reference = assignmentStatement.getLocalReference();
+  FrameSlot slot = getFrameSlot(reference);
+  return LocalVariableWriteNodeGen.create(
+      slot, (ExpressionNode) assignmentStatement.
+                          getExpressionStatement().accept(this));
+}
+```
+
+For them, we create a `LocalVariableWriteNode`. But of course, a write node
+still needs the expression that computes the value it needs to write. So,
+beside the slot, it also gets the transformed subexpression of the assignment
+statement.
+
+For the implementation of the read node, we got the following code:
+
+```java
+abstract class LocalVariableReadNode extends ExpressionNode {
+
+  protected final FrameSlot slot;
+
+  public LocalVariableReadNode(FrameSlot slot) {
+    this.slot = slot;
+  }
+
+  @Specialization
+  public Object doObject(final VirtualFrame frame) {
+    return frame.getValue(slot);
+  }
+}
+```
+
+The node is structured as usual. It takes the slot object as argument and stores
+it in a final field so that the compiler knows it can rely on it as a constant.
+The specialization does merely take the slot object to read a value from the
+frame. There could be more specialization to read different primitive types from
+the frame, but for the moment this is not necessary.
+
+The write node looks more or less the same:
+
+```java
+@NodeChild(value = "expr", type = ExpressionNode.class)
+abstract class LocalVariableWriteNode extends ExpressionNode {
+
+  protected final FrameSlot slot;
+
+  public LocalVariableWriteNode(FrameSlot slot) {
+    this.slot = slot;
+  }
+  
+  @Specialization
+  public final Object writeGeneric(VirtualFrame frame, Object expValue) {
+    ensureObjectKind();
+    frame.setObject(slot, expValue);
+    return expValue;
+  }
+
+  protected void ensureObjectKind() {
+    if (slot.getKind() != FrameSlotKind.Object) {
+      CompilerDirectives.transferToInterpreterAndInvalidate();
+      slot.setKind(FrameSlotKind.Object);
+    }
+  }
+}
+```
+
+Here we need to have the expression for the value that is to be written.
+So, it is declared with an annotation. In the specialization, we get it as the
+`expValue` argument. Note, when executing `writeGeneric(.)`, we first ensure
+that the slot kind has been set to `Object`. The optimizer is able to remove
+this, because it only reaches frame slots that have been initialized. Finally,
+we set the `expValue` on the frame.
+
+And that's all. With these nodes we support read and write operations for
+local variables.
 
 ## Loops
+
+The final element we need for the Mandelbrot function is iteration, or *loops*.
+Golo got multiple types of loops including classic `for` and `while` loops.
+Fortunately for us, Golo's IR already takes care of desugaring these constructs
+to a single loop construct with explicit initialization, condition, body, and
+post-condition. We translate this construct to the following node implementation:
+
+```java
+public final class ForLoopNode extends ExpressionNode {
+
+  @Child protected ExpressionNode init;
+  @Child protected LoopNode loopNode;
+
+  public ForLoopNode(ExpressionNode init,
+      ExpressionNode condition,
+      ExpressionNode body,
+      ExpressionNode post) {
+    this.init = init;
+    loopNode = Truffle.getRuntime().createLoopNode(
+        new RepeatNode(condition, body, post));
+  }
+
+  @Override
+  public Object executeGeneric(VirtualFrame frame) {
+    if (init != null) {
+      init.executeGeneric(frame);
+    }
+    try {
+      loopNode.executeLoop(frame);
+    } catch (BreakLoopException e) { /* just left the loop */ }
+    return null;
+  }
+}
+```
+
+Our `ForLoopNode` got two `@Child` nodes. The first one is the `init`
+expression. In a classic `for` loop, it could for instance initialize an
+induction variable `i` with an initial value. The second child node is
+Truffle's `LoopNode`, which implements general iteration with support for
+on-stack-replacement. More on that in a bit.
+
+The `executeGeneric(.)` first executes the `init` expression if available, and
+afterwards the loop. In case the loop contained a `break` keyword, we would
+throw a control-flow exception that is caught here.
+
+The actual loop execution happens in the `LoopNode`. From the language
+implementer perspective, the `LoopNode` requires an implementation of a
+`RepeatingNode` that implements a single method which does a loop iteration
+and indicates whether it should continue.
+
+
 
 - loops, incl. break
    -> all types of golo loops are desuggared to a common representation
