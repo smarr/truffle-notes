@@ -145,3 +145,24 @@ version.
 [7]: http://golo-lang.org/
 [8]: http://arxiv.org/pdf/1505.06003v1.pdf
 [9]: https://github.com/smarr/Classic-Benchmarks/blob/master/benchmarks/Mandelbrot.java#L42
+
+<script type="text/javascript">
+var langs = ["gradle", "golo", "java", "bash"];
+
+for (var j = 0; j < langs.length; j++) {
+  var lang = langs[j];
+  var snippets = document.getElementsByClassName(lang);
+  while (snippets.length) {
+    var cur = snippets[0];
+    var p = cur.parentNode;
+    p.className += "brush: java; toolbar: false;"
+    
+    while (cur.childNodes.length) {
+        p.appendChild(cur.firstChild);
+    }
+    cur.remove();
+  }
+}
+
+SyntaxHighlighter.all();
+</script>

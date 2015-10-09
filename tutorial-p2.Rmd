@@ -34,7 +34,7 @@ we are simply adding the three keywords `bitXOR`, `bitLSHIFT`, and `bitOR`.
 This means, we extend the Golo grammar by adding `BIT_OPERATOR` to the
 definition of [`TOKEN`][4]:
 
-```
+```java
 TOKEN :
 {
   < MULTIPLICATIVE_OPERATOR: ("*" | "/" | "%") >
@@ -54,7 +54,7 @@ operand of a `BitExpression` is parsed as a `UnaryExpression`, then there might
 by blank lines, then we need a `BIT_OPERATOR`, and eventually we expect the
 right operand, which itself can be some invocation.
 
-```
+```java
 void BitExpression() #void:
 {
   Token token = null;
@@ -158,6 +158,27 @@ Object-based representation for all values.
 In the next post, we will finally start with the basics of how to apply Truffle
 to Golo and implement as sufficient subset of it to run a classic Fibonacci
 computation.
+
+<script type="text/javascript">
+var langs = ["gradle", "golo", "java", "bash"];
+
+for (var j = 0; j < langs.length; j++) {
+  var lang = langs[j];
+  var snippets = document.getElementsByClassName(lang);
+  while (snippets.length) {
+    var cur = snippets[0];
+    var p = cur.parentNode;
+    p.className += "brush: java; toolbar: false;"
+    
+    while (cur.childNodes.length) {
+        p.appendChild(cur.firstChild);
+    }
+    cur.remove();
+  }
+}
+
+SyntaxHighlighter.all();
+</script>
 
 <!--
 - step 3: make fibonnaci work
