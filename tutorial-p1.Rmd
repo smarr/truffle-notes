@@ -1,31 +1,33 @@
 <span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
 
-Truffle-lize Your Language Implementation in 5 Easy Steps
-=========================================================
+Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps
+==============================================================
 
-## What Is Truffle and How Can It Be Useful?
+## What Is Graal JIT Compilation and How Can It Be Useful?
 
-[Truffle][1] is a Java framework for implementing interpreters. In combination
-with [Graal][2], it provides just-in-time (JIT) compilation based on simple
-[abstract-syntax-tree (AST) interpreters][3]. This means, one only has to
-implement the language once as part of the AST, and essentially gets a JIT
-compiler that can reach the performance of state-of-the-art virtual machines
-such as HotSpot for Java or V8 for JavaScript. Thus, Truffle is a useful
-approach for implementing languages that need to reach good performance. An
-alternative approach would be [RPython][4] with its meta-tracing just-in-time
-compiler. A more thorough comparison of the two approaches can be found
-[here][5] and [here][6]. However, for this series of blog posts, we are
+[Graal][2] is a just-in-time compiler for the Java Virtual Machine (JVM),
+written in Java. In combination with the [Truffle][1] framework, one can
+implement simple [abstract-syntax-tree (AST) interpreters][3] that can
+automatically use the Graal compiler. This means, one only has to implement the
+language once as an interpreter, and essentially gets a JIT compiler for free
+that can reach the performance of state-of-the-art virtual machines such as
+HotSpot for Java or V8 for JavaScript. Thus, Graal is a useful to reach good
+performance without building a custom virtual machine.
+
+An alternative approach would be [RPython][4] with its meta-tracing
+just-in-time compiler. A more thorough comparison of the two approaches can be
+found [here][5] and [here][6]. However, for this series of blog posts, we are
 interested in a language running on top of the JVM, and thus, Truffle is our
 framework of choice.
 
 # Step 1: Setting A Goal and Choose A Benchmark
 
-While Truffle provides a nice set of features to simplify the implementation of
-languages, often the desire for better performance is a major reason for
-adopting it. Thus, we will thus focus on using Truffle to improve the
-performance of a language implementation.
+Truffle provides a nice set of features to simplify the implementation of
+languages. However, we want to focus here on using Graal and Truffle to improve
+the performance of a language implementation. So, let's look into the following
+example from this perspective.
 
-## Improve the Numerical Performance of Golo
+## The Numerical Performance of Golo
 
 Our language of choice is going to be [Golo][7]. Golo has been designed as a
 dynamic language for the JVM that benefits from the JVM's `invokedynamic`
@@ -34,12 +36,12 @@ haven't heard of it before, don't worry. We will stick to the basics and focus
 on features that are common to many languages. From some basic benchmarks, we
 know that [Golo is still quite a bit slower on numeric code than Java][8].
 
-## Use Mandelbrot as a Benchmark
+## Mandelbrot as a Benchmark
 
 To keep it simple, but still chose something that can be used to investigate
-interesting performance aspects, we will take a Mandelbrot calculation as our
-main example. The following code snippet is an abbreviated version of the [Java
-benchmark][9] we will use:
+performance, we use a Mandelbrot calculation as our main example. The
+following code snippet is an abbreviated version of the [Java benchmark][9] we
+will use:
 
 ```java
 while (y < size) {
@@ -67,10 +69,10 @@ while (y < size) {
 // remainder left out for brevity
 ```
 
-The first property to notice is that the computation is inside of three nested
-loops. Furthermore, most operations are on `double` values. For a dynamic
-language, this means that optimization of the lookup of operators and methods
-as well as the way `double` values are treated is essential for performance.
+In this fragment, we got three nested loops that work mostly on `double`
+values. For a dynamic language, this means that it is essential for reaching
+good performance to optimize the lookup of operators and methods as well as the
+way `double` values are treated.
 
 In dynamic languages, the concrete operation behind the multiplication '`*`' the
 division '`/`' or a less-than '`<`' comparison operator is typically known only at
@@ -91,7 +93,7 @@ processed by processor instructions. This means that there is at least a
 dereference operation for the value before the actual computation happens.
 
 In future parts of this series of blog posts, we will see how these issues can
-be approached with Truffle.
+be approached with Graal and Truffle.
 
 ## Initial Performance Comparison
 
@@ -123,18 +125,22 @@ slowdown <- round(g / j, 1)
 
 As result, we see that Mandelbrot takes about `r round(j)`ms to execute on
 Java and about `r round(g)`ms on Golo, which means, Golo is about `r slowdown`x
-slower for our Mandelbrot benchmark. This leaves hopefully plenty of room to
+slower for our Mandelbrot benchmark, leaving plenty of room to
 increase Golo's performance.
 
-## Oops, Golo Doesn't Have Bit Operations
+## Next Time: A First Look at Golo
 
-Ah well, before I forget it: Golo does not actually have bit operations. So,
-before we truffle-ize it, the next part of this blog post series will look
-briefly into the current Golo implementation. It compiles Golo directly to
-JVM bytecodes and relies heavily on `invokedynamic` to realize the dynamic
-language semantics. By adding bit operations, we will get a basic idea of
-how the implementation works to be able to compare it later to the Truffle
-version.
+Before we start adding Graal support, the next part of this blog post series
+looks briefly into the current Golo implementation. It compiles Golo directly
+to JVM bytecodes and relies heavily on `invokedynamic` to realize the dynamic
+language semantics. Interestingly, Golo does not have bit operations. We'll use
+that as an excuse to we will get a basic idea of how the implementation works
+and then can compare it later to the Graal+Truffle version.
+
+## Acknowledgements
+
+I'd like to thank [Julien Ponge](https://julien.ponge.org/) for his comments on
+drafts of this tutorial and his help with the technical details of Golo.
 
 [1]: https://github.com/OracleLabs/Truffle
 [2]: http://openjdk.java.net/projects/graal/
@@ -166,3 +172,7 @@ for (var j = 0; j < langs.length; j++) {
 
 SyntaxHighlighter.all();
 </script>
+
+<p style="text-align:center">
+<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
+</p>
