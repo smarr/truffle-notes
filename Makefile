@@ -7,4 +7,6 @@ all:
 	./knit.R tutorial-p1.Rmd
 	./knit.R tutorial-p2.Rmd
 	./knit.R tutorial-p3.Rmd
-	
+
+clean:
+	rm *.html *.md
