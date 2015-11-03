@@ -268,7 +268,7 @@ public ExpressionNode visitReferenceLookup(ReferenceLookup referenceLookup) {
   }
 }
 
-FrameSlot getFrameSlot(final LocalReference reference) {
+FrameSlot getFrameSlot(LocalReference reference) {
   return context.frameDescriptors.peek().
           findOrAddFrameSlot(reference.getName());
 }
@@ -283,11 +283,12 @@ Truffle's handle to represent the variable.
 Assignment statements are transformed similarly:
 
 ```java
-public ExpressionNode visitAssignmentStatement(AssignmentStatement assignmentStatement) {
-  LocalReference reference = assignmentStatement.getLocalReference();
+public ExpressionNode visitAssignmentStatement(
+    AssignmentStatement assignment) {
+  LocalReference reference = assignment.getLocalReference();
   FrameSlot slot = getFrameSlot(reference);
   return LocalVariableWriteNodeGen.create(
-      slot, (ExpressionNode) assignmentStatement.
+      slot, (ExpressionNode) assignment.
                           getExpressionStatement().accept(this));
 }
 ```
@@ -309,7 +310,7 @@ abstract class LocalVariableReadNode extends ExpressionNode {
   }
 
   @Specialization
-  public Object doObject(final VirtualFrame frame) {
+  public Object doObject(VirtualFrame frame) {
     return frame.getValue(slot);
   }
 }
@@ -334,10 +335,10 @@ abstract class LocalVariableWriteNode extends ExpressionNode {
   }
   
   @Specialization
-  public final Object writeGeneric(VirtualFrame frame, Object expValue) {
+  public Object writeGeneric(VirtualFrame frame, Object exprValue) {
     ensureObjectKind();
-    frame.setObject(slot, expValue);
-    return expValue;
+    frame.setObject(slot, exprValue);
+    return exprValue;
   }
 
   protected void ensureObjectKind() {
@@ -362,13 +363,17 @@ local variables.
 ## Loops
 
 The final element we need for the Mandelbrot function is iteration, or *loops*.
-Golo got multiple types of loops including classic `for` and `while` loops.
+Golo got multiple types of loops including `for` and `while` loops.
 Fortunately for us, Golo's IR already takes care of desugaring these constructs
 to a single loop construct with explicit initialization, condition, body, and
-post-condition. We translate this construct to the following node implementation:
+post-condition.
+
+### The Main Loop Node
+
+ We translate this construct to the following node implementation:
 
 ```java
-public final class ForLoopNode extends ExpressionNode {
+class ForLoopNode extends ExpressionNode {
 
   @Child protected ExpressionNode init;
   @Child protected LoopNode loopNode;
@@ -396,57 +401,191 @@ public final class ForLoopNode extends ExpressionNode {
 ```
 
 Our `ForLoopNode` got two `@Child` nodes. The first one is the `init`
-expression. In a classic `for` loop, it could for instance initialize an
-induction variable `i` with an initial value. The second child node is
-Truffle's `LoopNode`, which implements general iteration with support for
+expression. In a `for` loop like in Java or C, it typically initializes an
+induction variable, e.g., `i`, with an initial value. The second child node is
+Truffle's `LoopNode`, which realizes the iteration with support for
 on-stack-replacement. More on that in a bit.
 
 The `executeGeneric(.)` first executes the `init` expression if available, and
 afterwards the loop. In case the loop contained a `break` keyword, we would
 throw a control-flow exception that is caught here.
 
-The actual loop execution happens in the `LoopNode`. From the language
-implementer perspective, the `LoopNode` requires an implementation of a
-`RepeatingNode` that implements a single method which does a loop iteration
-and indicates whether it should continue.
+### Using Truffle's `LoopNode`
 
+The actual iteration happens in the `LoopNode`. For that, it requires an
+implementation of the `RepeatingNode` interface. The interface has a single
+method which does a loop iteration and indicates whether it should continue. As
+mentioned before, this abstraction is ment to enable on-stack-replacement. This
+is a useful feature for longrunning methods that contain loops. Normally, the
+execution would only reach a newly compiled native code version of a method
+when it is entered again. With on-stack-replacement however, the VM can detect
+methods with long running loops and switch to the optimized native code even
+while executing the loop.
 
+Our implementation of the `RepeatingNode` interface looks as follows:
 
-- loops, incl. break
-   -> all types of golo loops are desuggared to a common representation
-      so, while loops as well as for loops are mapped to the same construct
-   -> break node, break exception
-   -> Truffle loop node, for on-stack-replacment (long running code in loops)
+```java
+class RepeatNode extends Node implements RepeatingNode {
 
+  @Child protected ExpressionNode condition;
+  @Child protected ExpressionNode body;
+  @Child protected ExpressionNode post;
 
+  public RepeatNode(ExpressionNode condition,
+      ExpressionNode body, ExpressionNode post) {
+    this.condition = condition;
+    this.body = body;
+    this.post = post;
+  }
 
-- calling java-land methods reflectively
-  -> because we can
+  @Override
+  public boolean executeRepeating(VirtualFrame frame) {
+    if (shouldExecute(frame)) {
+      body.executeGeneric(frame);
+      if (post != null) {
+        post.executeGeneric(frame);
+      }
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  private boolean shouldExecute(VirtualFrame frame) {
+    try {
+      return condition.executeBoolean(frame);
+    } catch (UnexpectedResultException e) {
+      CompilerDirectives.transferToInterpreter();
+      throw new UnsupportedSpecializationException(
+          this, new Node[]{condition}, e.getResult());
+    }
+  }
+}
+```
+
+It got child nodes for the loop condition, the loop body, and a `post`
+expression that is evaluated after each iteration. The method `shouldExecute`
+evaluates the loop condition. But since Golo is a dynamically typed language,
+we can't be completely sure that the condition expression really returns a
+boolean. Here we handle this case simply be throwing an exception that
+indicates that this case is not yet supported.
+
+The `executeRepeating(.)` method represents one iteration. Thus, it first
+checks whether the loop should continue executing by invoking
+`shouldExecute(.)`, and if that is the case, it executes the loop's `body`.
+After executing the body, it also executes the `post` expression if it is
+present. The return value of `executeRepeating(.)` indicates whether the
+iteration should be continued. Beside the minor complications, implementing a
+loop construct is thus pretty simple. If on-stack-replacement is not desired
+for some reason, one could implement the loop also directly using any Java loop
+construct.
+
+### The `break` Keyword in Loops
+
+As we have seen earlier, Golo also supports the `break` keyword to exit from
+loops. The implementation idea is very similar to handling the `return`
+keyword. The AST node for the `break` keyword is going to throw a control-flow
+exception. And as we have seen in the `ForLoopNode`, we handle it with a `try
+{...} catch (BreakLoopException e)` around the execution of the loop body.
+Thus, the `break` keyword is implemented with the following `BreakLoopNode`:
+
+```java
+class BreakLoopNode extends ExpressionNode {
+
+  @Override
+  public Object executeGeneric(VirtualFrame frame) {
+    throw new BreakLoopException();
+  }
+}
+```
+
+The node will simply raise the `BreakLoopException` which returns execution to
+the `ForLoopNode`. After catching the exception, execution simply continues
+after the loop.
+
+## Invoking Arbitrary Java Methods
+
+Golo is designed to be a dynamic language for the JVM ecosystem. Thus, it
+embraces Java and its ecosystem and Golo programs use Java libraries
+throughout. So far, we added dedicated nodes for each functionality. Applying
+the same approach here would not be scalable. So, we need a way to call Java
+methods in a more *reflective* fashion.
+
+Since Golo's lookup mechanism returns for some cases already Java
+`MethodHandle`s, we added a `MethodHandleInvokeNode`:
+
+```java
+class MethodHandleInvokeNode extends FunctionInvocationNode {
+  private final MethodHandle method;
+
+  public MethodHandleInvokeNode(FunctionInvocationNode uninit,
+      MethodHandle method) {
+    super(uninit.name, uninit.module, uninit.argumentsNode);
+    this.method = method;
+  }
+
+  @Override
+  public Object executeEvaluated(VirtualFrame frame,
+      Object[] args) {
+    try {
+      return method.invokeWithArguments(args);
+    } catch (Throwable e) {
+      throw new NotYetImplemented();
+    }
+  }
+}
+```
+
+This node becomes part of the function invocation specialization. So, if we get
+a `MethodHandle` as return, the `UninitializedFunctionInvocationNode` rewrites
+itself to this `MethodHandleInvokeNode`. When it is executed, it simply calls
+`invokeWithArguments(.)`.
+
+For our benchmark, this is used to call the methods that read the System's time.
+
+## Summary
+
+```{r initial-performance, fig.height=3, fig.width=7, echo=FALSE, message=FALSE}
+## Avoid the usual ReBench setup
+library(ggplot2)
+library(plyr)
+times_java_ns <- c(108918, 109289, 108809, 114980, 104198, 107264, 108012, 109215, 104651, 107225, 105856)
+times_golo_ns <- c(526187, 506568, 519333, 515142, 511595, 512679, 522535, 488186, 511581, 502145, 515739)
+times_truf_ns <- c(161553, 148300, 147966, 162410, 146236, 145177, 131284, 153684, 154017, 159938, 159999)
+
+data <- data.frame(VM = c(rep("Java", 11), rep("Golo", 11), rep("Truffle", 11)), Time.ns = c(times_java_ns, times_golo_ns, times_truf_ns), stringsAsFactors = TRUE)
+stats <- ddply(data, ~ VM, summarise, Time.ms = mean(Time.ns) / 1000, sd = sd(Time.ns) / 1000)
+col <- c("#729fcf", "#e9b96e", "#ad7fa8")
+ggplot(stats, aes(x = VM, y = Time.ms, fill = VM)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymax = Time.ms + sd, ymin = Time.ms - sd), width=0.25) +
+  coord_flip() + theme_bw() + scale_fill_manual(values=col) +
+  theme(legend.position="none")
   
+  
+g <- stats[stats$VM == "Golo",]$Time.ms
+j <- stats[stats$VM == "Java",]$Time.ms
+t <- stats[stats$VM == "Truffle",]$Time.ms
+slowdown_g <- round(g / j, 1)
+slowdown_t <- round(t / j, 1)
+```
+
+As result, we see that Mandelbrot takes about `r round(j)`ms to execute on
+Java and about `r round(g)`ms on Golo, which means, Golo is about `r slowdown_g`x
+slower for our Mandelbrot benchmark. This leaves hopefully plenty of room to
+increase Golo's performance.
+
+`r slowdown_t`x
+
+<pre>
+- what have we seen? overview...
+- benchmark results?
 
 
- <!--
-
-
-    eventually: creating truffle function
-      - functions are going to require stack frames for storing local variables
-        -> that's done with the VirtualFrame class in truffle
-        -> they model variables based on `FrameSlot`s, which eventually also
-           can track types
-        -> we need in the first step a FrameDescriptor, which keeps track of
-           the set of variables for us
 
 
   -> interpretation mindset vs. compilation mindset
     
-
-
-
-
-
-
-- step 4: make mandelbrot work
-
 - step 5: optimize
 
 
@@ -455,8 +594,10 @@ http://lafo.ssw.uni-linz.ac.at/builds
 
 Needs -G:GraphPE to avoid NPE
 
-graalvm-jdk1.8.0/bin/java -G:-GraphPE -Xms256m -Xmx1024M -Xss1024M -Xbootclasspath/a:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/truffle-api-0.8.jar -classpath /Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/golo-3.0.0-incubation-SNAPSHOT.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/asm-5.0.4.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/jcommander-1.48.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/txtmark-0.13.jar:/Users/smarr/Projects/PostDoc/Lyon/golo-lang/build/install/golo/lib/json-simple-1.1.1.jar fr.insalyon.citi.golo.cli.Main golo --truffle --files samples/mandelbrot.golo
---> 
+export LIB=build/install/golo/lib; java -Xms256m -Xmx1024M -Xss1024M -Xbootclasspath/a:$LIB/truffle-api-0.8.jar -classpath $LIB/golo-3.0.0-incubation-SNAPSHOT.jar:$LIB/asm-5.0.4.jar:$LIB/jcommander-1.48.jar fr.insalyon.citi.golo.cli.Main golo --files samples/mandelbrot.golo
+
+export LIB=build/install/golo/lib; graalvm-jdk1.8.0/bin/java -G:-GraphPE -Xms256m -Xmx1024M -Xss1024M -Xbootclasspath/a:$LIB/truffle-api-0.8.jar -classpath $LIB/golo-3.0.0-incubation-SNAPSHOT.jar:$LIB/asm-5.0.4.jar:$LIB/jcommander-1.48.jar fr.insalyon.citi.golo.cli.Main golo --truffle --files samples/mandelbrot.golo
+</pre>
 
 <script type="text/javascript">
 var langs = ["gradle", "golo", "java", "bash"];
