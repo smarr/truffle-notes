@@ -143,6 +143,8 @@ implementations for all the types we want to be able to specialize on. These
 types are communicated explicitly to the TruffleDSL to facilitate code
 generation. We do this with the following `Types` class:
 
+<a id="types-class"></a>
+
 ```java
 @TypeSystem({
   int.class,
@@ -338,8 +340,8 @@ The `BinaryNode` is an abstract class without any methods. Its
 main use is to provide the left and right subnodes, i.e., node children by
 using the TruffleDSL. As the code above shows, we use the `@NodeChildren`
 annotation with two `@NodeChild` annotations that define left and right to be
-of type `ExpressionNode`. The main benefit of using the DSL is that it will now
-generate the boilerplate code for specializations and handling many of the
+of type `ExpressionNode`. The main benefit of using the DSL is that it
+generates the boilerplate code for specializations and handling many of the
 common issues for optimistic optimizations. In our specific case here, it
 enables use to implement the `LessThanNode` with the following code:
 
@@ -354,7 +356,7 @@ public abstract class LessThanNode extends BinaryNode {
 ```
 
 Note that `LessThanNode` is again an `abstract` class.
-However, it provides the `doIntegers` methods that is annotated with
+However, it provides the `doIntegers(.,.)` method that is annotated with
 `@Specialization`. This means, the DSL will generate the code to
 evaluate the `left` and `right` subexpressions of the `<` operation, which in
 our case are an argument read and an integer literal. If the evaluation returns
@@ -364,9 +366,9 @@ the expected integers, it will make sure that the AST is rewritten to use the
 this behavior is *good enough*. For a complete Golo implementation, we would of
 course need to provide the other necessary specializations as well.
 
-At this point, note that the signature of `doIntegers` as
+At this point, note that the signature of `doIntegers(.,.)` as
 well as the return type of `executeInteger(.)` uses the primitive `int` and
-thus avoids boxing of the integer.
+thus avoid boxing of integers.
 
 ### Control Flow: The `return` Keyword
 
@@ -395,9 +397,9 @@ top, we see the node that corresponds to the `return` operation we want to
 implement. So, how can we return from this node back to the function and at the
 same time also pass the desired return value? In Truffle, the solution is
 rather straightforward and uses `ControlFlowException`s. The class
-`ControlFlowException` is optimized for the use in interpreters and minimizes
-the cost of an exception at runtime. Thus, we subclass it with the following
-`ReturnException`:
+`ControlFlowException` minimizes the cost of an exception at runtime, for
+instance, by not capturing a stack trace. To use it, we subclass it with the
+following `ReturnException`:
 
 
 ```java
@@ -435,9 +437,14 @@ class ReturnNode extends ExpressionNode {
 }
 ```
 
-`ReturnNode` does only need to evaluate its child node `expr`, which is marked
-with `@Child`. It uses the result to create a new `ReturnException`, which is
-thrown to unwind the stack and return from the function.
+`ReturnNode` evaluates its child node `expr`, which is marked with `@Child`. It
+uses the resulting value to create a new `ReturnException`, which is thrown to
+unwind the stack and return from the function. So, in case of the `return n`
+expression in the `fib` function, this means, we read the argument, wrap the
+result into an exception object that is than thrown. And that's basically it.
+To see how the exception is caught, see [section 6.5](#truffle-function) on
+implementing the `Function` class.
+
 
 ### Addition and Subtraction Operators
 
@@ -467,21 +474,28 @@ public abstract class MinusNode extends BinaryNode {
 
 Both nodes are implemented as subclasses of `BinaryNode` and provide the
 specialized behavior for adding or subtracting integers. With this minimalism,
-the same caveats apply as for the `LessThanNode`.
+the same caveats apply as for the `LessThanNode`, i.e., for a full Golo
+implementation, we would need to provide support for other possible types as
+well.
 
 ## Functions and Conditional Control Flow
 
+So far, we merely dabbled with the very basics of language implementation. In
+this section, we finally make the step to add function calls and conditional
+control flow. Note, this time, we will not rely on the DSL. Instead, we are
+going to do some manual node specialization. I hope this provides some
+additional insights on how these types of self-optimizing interpreters work.
 
 ### Function Arguments
 
-More interesting than these operators are the `fib(.)` function invocations. As
-first step in `visitFunctionInvocation(.)`, we need to transform the argument
-expression of the function call. Ignoring Golo's named arguments, we can
-transform the argument expressions into a plain `ExpressionNode[]`. To avoid
-having different function invocation nodes for different number of arguments,
-we introduce a `EvalArgumentsNode` that will create an array of objects that is
-passed to the function call. That's also the reason why we needed the
-`Object[]` type in our `Types` class earlier.
+The generation of the `fib(.)` function invocations are handled by
+`visitFunctionInvocation(.)`. As the first step, it needs to transform the
+argument expression of the function call. Ignoring Golo's named arguments, we
+can transform the argument expressions into a plain `ExpressionNode[]`. To
+avoid having different function invocation nodes for different number of
+arguments, we introduce a `EvalArgumentsNode` that will create an array of
+objects that is passed to the function call. That's also the reason why we
+needed the `Object[]` type in our [`Types` class](#types-class) earlier.
 
 ```java
 class EvalArgumentsNode extends ExpressionNode {
@@ -513,9 +527,7 @@ captures the actual argument values for the call. Note again that the
 `executeObjectArray(frame)` method is annotated with `@ExplodeLoop` to help the
 optimizers.
 
-### Function Invocation
-
-<span style="color: red;">------SECOND PASS STARTS HERE------</span>
+### Function Invocation in Self-Optimizing Interpreters
 
 Once we got the `EvalArgumentsNode` object, we can create the actual
 `FunctionInvocationNode`. This one is quite a bit more complex than any of the
@@ -543,12 +555,18 @@ is the call to the `println(.)` function, which we need later to generate
 output on the terminal. The `fib(.)` function is going to be resolved
 statically, and `println(.)` is a method on Golo's `Predefined` class, which
 provides such convenience methods. We will handle `println(.)` specially, just
-to show a little more what we can do with Truffle. So, overall, we got three
-cases to cover. The initial function invocation node that is uninitialized, a
-normal static function call, and well-know builtins that we want to treat
-specially. This means, we can design a node that goes from an uninitialized
-case to either of the two specializations depending on the result of a lookup
-function.
+to show a little more what we can do with Truffle.<sup>3</sup><span
+class="sidenote" style="position: absolute; padding-left: 44em; width: 10em;
+font-size: 80%; text-align: left; display: block;"><sup>3</sup> In a full 
+Golo+Truffle backend, one probably wants a more generic mechanism. But, we are
+going to look at that only in the next part of this series of block 
+posts.</span>
+
+So, overall, we got three cases to cover. The initial function invocation node
+that is uninitialized, a normal static function call, and well-know builtins
+that we want to treat specially. This means, we can design a node that goes
+from an uninitialized case to either of the two specializations depending on
+the result of a lookup function.
 
 We'll start with the abstract `FunctionInvocationNode`:
 
@@ -582,13 +600,14 @@ It is a subclass of `ExpressionNode` and as such we implement
 `executeGeneric(frame)`. Furthermore, we implement argument evaluation here,
 since it is always the same independently of how an invocation is done. Thus,
 we take the `argumentsNode` and ask it to evaluate to an `Object[]`, which it
-will by construction (see the just implemented `EvalArgumentsNode`). With the
-result, we call `executeEvaluated(frame, args)`. This method is a convention
-that is also used by the DSL. The idea is that a node will first evaluate all
-child nodes, and then at some point execute the node's own logic. In this case,
-we only provide an abstract method that is implemented in the concrete
-subclasses. Note also that we implemented an interface `PreEvaluated`, which
-gives us a way to always execute only the node-specific behavior without
+will by construction (see the just implemented `EvalArgumentsNode`).
+
+With the result, we call `executeEvaluated(frame, args)`. This method is a
+convention that is also used by the DSL. The idea is that a node will first
+evaluate all child nodes, and then at some point execute the node's own logic.
+In this case, we only provide an abstract method that is implemented in the
+concrete subclasses. Note also that we implemented an interface `PreEvaluated`,
+which gives us a way to always execute only the node-specific behavior without
 evaluating child nodes. This is useful for instance during specializing a node.
 First we need to evaluate the child nodes to be able to determine the
 applicable specialization, and then we want to execute only the node-specific
@@ -635,8 +654,18 @@ evaluation to the resulting node by calling `doEvaluated(.,.)`. The
 result, it choses an appropriate implementation for the invocation. At this
 point, we only need the two previously discussed ways for invocation. The
 first one is the `DirectFunctionInvokeNode`. In case the lookup result was a
-Golo+Truffle function, we instantiate the invocation node and replace the
+Golo+Truffle function, we instantiate the invocation node and `replace(.)` the
 `UninitializedInvocationNode` node, i.e., the current `this` with it.
+
+Just as a side note, the *direct* use of `replace(.)` is only advisable for
+advanced use case and requires extra care. Normally, the DSL shields us from
+this operation. `replace(.)` is going to adapt the AST and makes sure that the
+parent pointer in the newly inserted node is set correctly. It also performs a
+few checks to make sure the replacement is legal. If the parent node's field
+type is not compatible with the new node, we will get an error. While there are
+such safeguards, we have to manually make sure that a node is only used once
+the AST. This is required because the nodes can only have a single parent, which
+is required to make the specialization logic work.
 
 In case the lookup result is some node that implements the `PreEvaluated`
 interface, we use it immediately to replace the current node.
