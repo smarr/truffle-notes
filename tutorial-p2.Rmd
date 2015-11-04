@@ -1,7 +1,7 @@
 <span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
 
 Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps
-=========================================================
+==============================================================
 
 # Step 2: Adding Bit Operations To Golo
 
