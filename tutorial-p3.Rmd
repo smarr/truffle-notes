@@ -1,30 +1,44 @@
 <span style="color: red; font-weight:bold">Draft: Please Do Not Share!</span>
 
-Truffle-lize Your Language Implementation in 5 Easy Steps
-=========================================================
+Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps
+==============================================================
 
 # Step 3: Initial Infrastructure and Supporting a Simple Fibonacci Function
 
 First, a word of warning. This post is much longer than I had hoped. The goal
 for today is to be able to execute a Fibonacci function with Golo+Truffle.
-However, this means, we need to get acquainted with most of the basic concepts.
-And in the Golo implementation that corresponds to a patch that is about 1500
-LOC large. So please bear with me, this could get a little long-winded.
+However, this means, we need to get acquainted with most of the basic Truffle
+concepts. And in the Golo implementation that corresponds to a patch that is
+about 1500 LOC large. So please bear with me, this gets a little long-winded.
 
 In case you missed the previous posts, this series starts with a [brief intro
-and motivation][0].
+and motivation][0]. Today's post discusses the basics of self-optimizing
+interpreters using the Truffle framework. Some of the discussions are also
+already including details on how the compilation with Graal works. However, the
+main focus is on the basic interpreter functionality.
+
+This post discusses how to create a Truffle abstract syntax tree (AST) from the
+Golo intermediate representation (IR), explains the basic mechanism of the
+Truffle framework, e.g., `execute()` methods, the TruffleDSL that generates
+much of the boilerplate code, self-optimization and node specialization, basic
+interpreter functionality such as function arguments, function invocation, and
+control flow constructs. So, just enough functionality to get a basic Fibonacci
+function working.
 
 ## Adding Basic Truffle Support
 
-The first step is to configure the build system to include the Truffle
+The first step is to configure the Gradle build system to include the Truffle
 dependencies. As of this writing, the latest released of Truffle and Graal is
-version 0.8 ([binary builds][0]).
+version 0.9 ([binary builds][0]).
 
-We will need the basic Truffle libraries as well as the TruffleDSL, which will
-make it later easier to implement the basic operations for our interpreter.
-Since Golo uses Gradle as build system, the Truffle jar is added as a `compile`
-dependency. We also need to add a plugin to the `build.gradle` configuration to
-enable annotation processing support, which is used by the TruffleDSL:
+We need the basic Truffle libraries as well as the TruffleDSL, which makes it
+easier to implement the basic operations for our interpreter. The build
+dependencies are configured in the `build.gradle` file. We need to add the
+Truffle jar as a `compile` dependency. Furthermore, we need a build plugin to
+enable annotation processing support for the TruffleDSL. The DSL uses
+annotations to generate implementation classes for us. Since the DSL itself
+also depends on Truffle, the Truffle jar needs to be registered as a `apt` 
+dependency as well:
 
 ```gradle
 plugins {
@@ -34,8 +48,9 @@ plugins {
 
 dependencies {
   // ...
-  compile 'com.oracle:truffle-api:0.8'
-  apt     'com.oracle:truffle-dsl-processor:0.8'
+  compile 'com.oracle.truffle:truffle-api:0.9'
+  apt     'com.oracle.truffle:truffle-api:0.9'
+  apt     'com.oracle.truffle:truffle-dsl-processor:0.9'
   
   // ...
 }
@@ -58,7 +73,7 @@ then start hacking there. The debugger then can just tell me what arguments I
 got, their values, etc. Trivial, but very convenient in ~~an unknown~~ any
 codebase.
 
-## Converting Golo's IR to a Truffle AST
+## Goal: Convert Golo's IR to a Truffle AST for to run Fibonacci
 
 The next step is to add an option to Golo's start mechanism to convert the Golo
 IR not into bytecodes but to give us a Truffle AST that can be executed. For
@@ -67,10 +82,10 @@ command line, Golo will parse the files as normal and then use a visitor to
 convert the resulting `GoloModule` into a set of Truffle-based functions/ASTs 
 (cf. [change set][2]).
 
-The resulting `GoloModule`s contain an IR (intermediate representation) that is
+The resulting `GoloModule`s represent Golo code in an IR that is
 already pretty high-level, and it would require only small changes to be
 compatible with Truffle. However, for clarity and to avoid artifacts that are
-not really idiomatic in Truffle, I chose to keep the IR and the Truffle AST
+not idiomatic in Truffle, I chose to keep the IR and the Truffle AST
 clearly separated. In a practical system, it might not be necessary. 
 
 As a result of separating the Truffle trees from the IR, we only need to [add
@@ -78,9 +93,7 @@ As a result of separating the Truffle trees from the IR, we only need to [add
 corresponding method in the `TruffleGenerationGoloIrVisitor`. In a first step,
 the visitor could be left almost empty and just needs visitor methods for all
 IR elements, which in turn can raise the `NotYetImplemented` exception. The
-full visitor was added with this [change][4].
-
-### Creating a Truffle AST at Runtime
+full visitor implementation was added in my branch with this [change][4].
 
 With this basic infrastructure in place, we can run Golo from the debugger
 executing the following program: `golo --truffle --files samples/fib.golo`
@@ -107,14 +120,14 @@ and basic arithmetic operations. Sounds simple, but it will keep us busy for
 the rest of this post.
 
 By now, the debugger should have hit the first `NotYetImplemented` exception in
-the visitor method for modules. Ignoring some Golo detail, it is sufficient to
+the visitor method for modules. Ignoring some Golo details, it is sufficient to
 iterate over all `GoloFunction`s and visit them one by one. The corresponding
 `visitFunction(.)` eventually needs to assemble a Truffle-compatible function.
 But, following the relevant execution flow in the debugger, we first transform
-the function's block, i.e., its body to a Truffle AST and worry about the
-details of creating a function later.
+the `fib` function's block, i.e., its body to a Truffle AST and worry about the
+details of creating a function object later.
 
-### Basic Truffle Mechanisms: Nodes, `execute*()` Methods, TypeSystems, and Frames
+## Truffle Basics: Nodes, `execute*()` Methods, TypeSystems, and Frames
 
 The first element we need is a common root node for all possible AST nodes. In
 Golo's IR, the corresponding class is essentially `GoloStatement`. For our
@@ -164,8 +177,8 @@ public abstract class ExpressionNode extends Node {
 }
 ```
 
-Note the abstract `executeGeneric(frame)` method on the second line. It is the
-generic execute method each node needs to implement. The other three
+The abstract `executeGeneric(frame)` method on the second line is the
+generic execute method each AST node needs to implement. The other three
 type-specific methods can be implemented if it makes sense for a node.
 Otherwise, the fallback implementation provided here will call
 `executeGeneric(.)`, and then check that the result is of the expected type.
@@ -173,13 +186,13 @@ This mechanism is useful for optimistic, i.e., speculative optimizations, which
 might not hold for all future executions of a node. We'll go into more details
 on this later.
 
-One might also notice the `frame` argument. The frame is the activation record
+One might also notice the `frame` argument. The frame is the *activation record*
 of a Truffle function and is used to access the actual arguments to a function
 call, local variables, and other state a language implementation might need in
 the scope of a function. Later we will see the argument access. For the other
 aspects, please see a later post in this series.
 
-#### Sequences
+### Sequences
 
 With the `ExpressionNode` in place, we can now transform the body of the
 `GoloFunction`, which is called a *block* and corresponds to a distinct lexical
@@ -209,33 +222,37 @@ class SequenceNode extends ExpressionNode {
 For the Truffle framework, it is important that the `expressions` field of the
 class is annotated with `@Children` so that specializations are handled
 correctly and so that the Graal compiler knows these expressions can be
-considered constant. The `final` keyword is here not strictly necessary, but it
-is good practice to make the array final to avoid it being replaced with
-another array that might have a different length.
+considered constant. The `final` keyword is here not strictly necessary, but in
+general it is good practice to make node fields final whenever possible to
+facilitate constant folding during compilation.
 
-The `executeGeneric(.)` method iterates of these child expressions and
-recursively calls `executeGeneric(.)`. For the last expression, we actually
-care about the computed value and return it. For optimizations, it is also
-necessary to tell Graal that the loop here needs to be unrolled by using the
-`@ExplodeLoop` annotation. This makes sure that none of the calls to
-`executeGeneric(.)` have to be treated as polymorphic, but that they can be
-inlined, which enables many common compiler optimizations. The unrolling is safe
-here, because the number of statements in a block is lexically defined, and thus
-constant. Depending on language semantics, this might for instance also apply
-to the processing of function arguments as we will see later.
+The `executeGeneric(.)` method iterates over these child expressions and
+recursively calls `executeGeneric(.)`. For the last expression is different, 
+because we need to return its result value.
+
+To enable the Graal compiler later on to optimize this code as much as
+possible, it is necessary to mark this loop with the `@ExplodeLoop` annotation
+to ensure it is *unrolled*. This makes sure that the call to
+`executeGeneric(.)` is not treated as polymorphic. By unrolling the loop, the
+compiler can inline the specific `executeGeneric(.)` methods for each
+`expression[i]`. This enables many common compiler optimizations. The unrolling
+is safe here, because the number of statements in a block is lexically defined,
+and thus constant. Depending on language semantics, this might for instance
+also apply to the processing of function arguments, as we will see later.
 
 Note, while stepping through the debugger, the block we encountered should be
 the on that contains the `if ... {} else {}` construct of the `fib` function,
 which we dive into now.
 
-#### Argument Reads
+### Argument Reads
 
 Continuing from the `visitBlock(.)` function in the debugger, transforming our
 `fib` function step-by-step, the next element is going to be the conditional
 branch. It is transformed to Truffle nodes in the
 `visitConditionalBranching(.)` method. As a first step, we visit the condition
-`n < 2`. When stepping into it, the left operand is a argument read of `n`. As
-mentioned earlier, function arguments are passed as `Object[]` arrays in the
+`n < 2`. When stepping into it, the left operand is a argument read of `n`.
+
+As mentioned earlier, function arguments are passed as `Object[]` arrays in the
 frame, i.e., activation record of the function. To access them, we add the
 `LocalArgumentReadNode` class, which is sketched below. Such a node keeps the
 index of the argument it corresponds to, and on execution, simply accesses the
@@ -255,12 +272,12 @@ class LocalArgumentReadNode extends ExpressionNode {
 }
 ```
 
-#### Literals
+### Literals
 
 The right operand is a literal integer `2`. Literal nodes are the simplest
-nodes we have, because it is simply returns the stored value. For Golo+Truffle,
+nodes we have, because it simply returns the stored value. For integer values,
 we add the `IntegerLiteralNode` below. Note, for the compiler later on, it is
-important that the `val` field in which the value is stored is `final`. This
+important that the `val` field, in which the value is stored, is `final`. This
 ensures that the compiler can treat the value as constant to enable
 optimizations.
 
@@ -282,10 +299,32 @@ class IntegerLiteralNode extends LiteralNode {
 }
 ```
 
-#### Node Children and Specializations
+## TruffleDSL, Basic Operators, and Returning from a Function
 
-The comparison operation itself is implemented as `LessThanNode`. For
-convenience, we extend the `BinaryNode` class below:
+So far, we needed only very basic mechanisms of Truffle and mostly followed the
+framework by implementing abstract methods. Now, we are moving on to use the
+TruffleDSL to provide functionality that is, for instance, specific to certain
+types that we want to optimize for. The TruffleDSL facilitates this by
+providing annotations that are used to generate much of the necessary
+boilerplate code.
+
+The DSL provides the notions of nodes and their children, i.e., subexpressions.
+Furthermore, it enables us to implement *specializations* based on types as
+well as other runtime information. The previously discussed `execute*()`
+methods are essentially the interface to subnodes. Using this interface, the
+DSL generate the self-specializing code to instantiate node objects, provide
+the specialization checks, evaluate subnodes, do node rewriting, and handle
+potential polymorphism, i.e., the case that more than one specialization is
+required for a specific point in the program (AST node).
+
+In the following, we discuss the basic concepts to implement binary operations
+in the Truffle style.
+
+### Node Children and Specializations
+
+Back to the Fibonacci function, the comparison operation for our `n < 2`
+expression is implemented as `LessThanNode`. For convenience, we extend the
+`BinaryNode` class below:
 
 ```java
 @NodeChildren({
@@ -295,7 +334,7 @@ convenience, we extend the `BinaryNode` class below:
 public abstract class BinaryNode extends ExpressionNode { }
 ```
 
-The `BinaryNode` is an abstract classes without any methods. Its
+The `BinaryNode` is an abstract class without any methods. Its
 main use is to provide the left and right subnodes, i.e., node children by
 using the TruffleDSL. As the code above shows, we use the `@NodeChildren`
 annotation with two `@NodeChild` annotations that define left and right to be
@@ -329,7 +368,7 @@ At this point, note that the signature of `doIntegers` as
 well as the return type of `executeInteger(.)` uses the primitive `int` and
 thus avoids boxing of the integer.
 
-#### Control Flow: The `return` Keyword
+### Control Flow: The `return` Keyword
 
 After completing the condition, we are back in the
 `visitConditionalBranching(.)` method with the debugger. The next element, for
@@ -400,7 +439,7 @@ class ReturnNode extends ExpressionNode {
 with `@Child`. It uses the result to create a new `ReturnException`, which is
 thrown to unwind the stack and return from the function.
 
-#### Addition and Subtraction Operators
+### Addition and Subtraction Operators
 
 Moving on in the debugger should get us back to the
 `visitConditionalBranching(.)` method, which we continue to transform by
@@ -430,7 +469,10 @@ Both nodes are implemented as subclasses of `BinaryNode` and provide the
 specialized behavior for adding or subtracting integers. With this minimalism,
 the same caveats apply as for the `LessThanNode`.
 
-#### Function Arguments
+## Functions and Conditional Control Flow
+
+
+### Function Arguments
 
 More interesting than these operators are the `fib(.)` function invocations. As
 first step in `visitFunctionInvocation(.)`, we need to transform the argument
@@ -471,7 +513,7 @@ captures the actual argument values for the call. Note again that the
 `executeObjectArray(frame)` method is annotated with `@ExplodeLoop` to help the
 optimizers.
 
-#### Function Invocation
+### Function Invocation
 
 <span style="color: red;">------SECOND PASS STARTS HERE------</span>
 
@@ -599,7 +641,7 @@ Golo+Truffle function, we instantiate the invocation node and replace the
 In case the lookup result is some node that implements the `PreEvaluated`
 interface, we use it immediately to replace the current node.
 
-#### Invoking Truffle Functions
+### Invoking Truffle Functions
 
 The `DirectFunctionInvokeNode` only has to perform the actual function
 invocation. As discussed earlier, here we only handle cases that are statically
@@ -649,7 +691,7 @@ the else branch is create. After this is done, we are finally back at
 `visitBlock(.)`, where the `SequenceNode` for the block of the else branch is
 created.
 
-#### Control Flow: Conditionals
+### Control Flow: Conditionals
 
 With the `SequenceNode` for the else branch of the conditional, we finally got
 all elements needed to assemble the conditional itself. It is implemented as
@@ -714,7 +756,7 @@ complexity of handling this special case during compilation. Instead, execution
 will simply return to the interpreter, which is slower, but does not prevent
 many essential optimizations to happen for the best-case scenario.
 
-#### Truffle Functions aka `RootNode`s
+### Truffle Functions aka `RootNode`s
 
 With the `IfNode` constructed, we finally got all elements for our `fib(.)`
 function transformed to a Truffle representation. Now, we can create the actual
@@ -757,7 +799,7 @@ optimize function calls. Since we need a `CallTarget` for each of our Truffle
 functions, we create it in the constructor and it is automatically set on
 `this`, so that it can be used later.
 
-#### An Intrinsic Node for Printing
+### An Intrinsic Node for Printing
 
 With that, we are almost set for executing the Fibonacci program. It remains
 only the `main()` function itself. When discussing function invocation, I
@@ -864,7 +906,7 @@ SyntaxHighlighter.all();
 </script>
 
 <p style="text-align:center">
-<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Truffle-lize Your Language Implementation in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
+<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
 </p>
 
 [0]: http://todo
