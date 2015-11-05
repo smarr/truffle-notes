@@ -251,6 +251,8 @@ which we dive into now.
 
 ### Argument Reads
 
+<a id="arg-reads">
+
 Continuing from the `visitBlock(.)` function in the debugger, transforming our
 `fib` function step-by-step, the next element is going to be the conditional
 branch. It is transformed to Truffle nodes in the
@@ -534,6 +536,8 @@ captures the actual argument values for the call. Note again that the
 optimizers.
 
 ### Function Invocation in Self-Optimizing Interpreters
+
+<a id="func-invocation"></a>
 
 Once we got the `EvalArgumentsNode` object, we can create the actual
 `FunctionInvocationNode`. This one is quite a bit more complex than any of the
