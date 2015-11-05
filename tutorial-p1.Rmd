@@ -11,7 +11,7 @@ implement simple [abstract-syntax-tree (AST) interpreters][3] that can
 automatically use the Graal compiler. This means, one only has to implement the
 language once as an interpreter, and essentially gets a JIT compiler for free
 that can reach the performance of state-of-the-art virtual machines such as
-HotSpot for Java or V8 for JavaScript. Thus, Graal is a useful to reach good
+HotSpot for Java or V8 for JavaScript. Thus, Graal is useful to reach good
 performance without building a custom virtual machine.
 
 An alternative approach would be [RPython][4] with its meta-tracing
@@ -38,7 +38,7 @@ know that [Golo is still quite a bit slower on numeric code than Java][8].
 
 ## Mandelbrot as a Benchmark
 
-To keep it simple, but still chose something that can be used to investigate
+To keep it simple, but still choose something that can be used to investigate
 performance, we use a Mandelbrot calculation as our main example. The
 following code snippet is an abbreviated version of the [Java benchmark][9] we
 will use:
