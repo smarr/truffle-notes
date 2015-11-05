@@ -23,7 +23,8 @@ Truffle framework, e.g., `execute()` methods, the TruffleDSL that generates
 much of the boilerplate code, self-optimization and node specialization, basic
 interpreter functionality such as function arguments, function invocation, and
 control flow constructs. So, just enough functionality to get a basic Fibonacci
-function working.
+function working. At the end of the post, we also provide a brief overview of
+the most important bits.
 
 ## Adding Basic Truffle Support
 
@@ -129,10 +130,11 @@ details of creating a function object later.
 
 ## Truffle Basics: Nodes, `execute*()` Methods, TypeSystems, and Frames
 
+<a id="execute-methods"></a>
+
 The first element we need is a common root node for all possible AST nodes. In
 Golo's IR, the corresponding class is essentially `GoloStatement`. For our
-purposes we add `ExpressionNode`,<sup>1</sup><span class="sidenote"
-style="position: absolute; padding-left: 44em; width: 10em; font-size: 80%; text-align: left; display: block;"><sup>1</sup>
+purposes we add `ExpressionNode`,<sup>1</sup><span class="sidenote"><sup>1</sup>
 We use the term *expression* here, because most nodes will need to
 provide a return value for the `execute*()` methods.</span> which needs to
 extend Truffle's `Node` class. This `ExpressionNode` needs to provide a set of
@@ -196,12 +198,13 @@ aspects, please see a later post in this series.
 
 ### Sequences
 
+<a id="sequences"></a>
+
 With the `ExpressionNode` in place, we can now transform the body of the
 `GoloFunction`, which is called a *block* and corresponds to a distinct lexical
 scope in Golo. To represent the content of such blocks, which can be multiple
 expressions, we use the following `SequenceNode` that holds
 the expressions as child nodes:
-
 
 ```java
 class SequenceNode extends ExpressionNode {
@@ -323,6 +326,7 @@ In the following, we discuss the basic concepts to implement binary operations
 in the Truffle style.
 
 ### Node Children and Specializations
+<a id="dsl-and-specializations"></a>
 
 Back to the Fibonacci function, the comparison operation for our `n < 2`
 expression is implemented as `LessThanNode`. For convenience, we extend the
@@ -371,6 +375,8 @@ well as the return type of `executeInteger(.)` uses the primitive `int` and
 thus avoid boxing of integers.
 
 ### Control Flow: The `return` Keyword
+
+<a id="return"></a>
 
 After completing the condition, we are back in the
 `visitConditionalBranching(.)` method with the debugger. The next element, for
@@ -556,8 +562,7 @@ output on the terminal. The `fib(.)` function is going to be resolved
 statically, and `println(.)` is a method on Golo's `Predefined` class, which
 provides such convenience methods. We will handle `println(.)` specially, just
 to show a little more what we can do with Truffle.<sup>3</sup><span
-class="sidenote" style="position: absolute; padding-left: 44em; width: 10em;
-font-size: 80%; text-align: left; display: block;"><sup>3</sup> In a full 
+class="sidenote"><sup>3</sup> In a full 
 Golo+Truffle backend, one probably wants a more generic mechanism. But, we are
 going to look at that only in the next part of this series of block 
 posts.</span>
@@ -602,6 +607,7 @@ since it is always the same independently of how an invocation is done. Thus,
 we take the `argumentsNode` and ask it to evaluate to an `Object[]`, which it
 will by construction (see the just implemented `EvalArgumentsNode`).
 
+<a id="exec-evaluated"></a>
 With the result, we call `executeEvaluated(frame, args)`. This method is a
 convention that is also used by the DSL. The idea is that a node will first
 evaluate all child nodes, and then at some point execute the node's own logic.
@@ -703,17 +709,15 @@ executable elements, and define the calling convention. Without going into the
 details of the `Function` implementation already, our Truffle `Function`s will
 cache such a `CallTarget` that is used in `DirectCallNode`s. These nodes are
 created, as shown here, by the Truffle runtime. They represent statically bound
-calls, and communicate this knowledge to the compiler.<sup>2</sup><span
-class="sidenote" style="position: absolute; padding-left: 44em; width: 10em;
-font-size: 80%; text-align: left; display: block;"><sup>2</sup> They can also
+calls, and communicate this knowledge to the compiler.<sup>3</sup><span
+class="sidenote"><sup>3</sup> They can also
 be used, for instance in combination with the `@Cached` annotation to build
-polymorphic inline caches.</span> Incase a call-site is highly variable
+polymorphic inline caches.</span> When a call-site is highly variable
 (megamorphic), i.e., corresponds to many different functions, we could use the
-`IndirectCallNode` instead. In that case, the optimizer would not try to
-perform inlining, because it would most likely be counterproductive and could
-slow down execution.
+`IndirectCallNode` instead. In that case, the optimizer would not
+perform inlining, because it would most likely down execution.
 
-With the support for function invocation in place, we can transform the
+With this support for function invocation, we can transform the
 remainder of the `fib()` function. Stepping through the debugger should
 eventually lead us back to `visitReturnStatement()` where the `ReturnNode` for
 the else branch is create. After this is done, we are finally back at
@@ -769,7 +773,10 @@ issue for performance, because the compiler knows from the `@Child` annotation
 that it can consider the value of `elseNode` as a constant. Thus, the null
 check will be removed during compilation.
 
-Evaluating the condition is actually a little more complex. The
+Evaluating the condition is actually a little more complex.<sup>4</sup><span
+class="sidenote"><sup>4</sup> I refrained 
+from putting in a `ConditionProfile` to avoid additional complexity.
+But usually it is a good idea, e.g., to enable elimination of unused branches.</span> The
 `doCondition(.)` method needs to handle the case that the condition does not
 actually return a boolean value. With Golo being a dynamic language, this could
 of course happen at runtime. For our purposes, we do not provide a fallback
@@ -782,10 +789,13 @@ Note, the first operation in the catch clause is
 the compiler does not include the catch clause in the compilation. We assume,
 well behaved programs won't use non-boolean conditions and thereby avoid the
 complexity of handling this special case during compilation. Instead, execution
-will simply return to the interpreter, which is slower, but does not prevent
-many essential optimizations to happen for the best-case scenario.
+will *deoptimize*. Thus, it leaves the native code Graal produced and returns
+to this program point, i.e., to the interpreter, which is slower, but does not
+prevent many essential optimizations to happen in the compiler.
 
 ### Truffle Functions aka `RootNode`s
+<a id="truffle-function"></a>
+
 
 With the `IfNode` constructed, we finally got all elements for our `fib(.)`
 function transformed to a Truffle representation. Now, we can create the actual
@@ -888,7 +898,7 @@ the name `PrintlnNodeGen`. This class has a factory method `create(expr)` that
 takes the argument expression. In our case, we execute this code as part of the
 `UninitializedInvocationNode` that has the argument expressions stored in
 `argumentsNode`. So, we can take the corresponding expression from there. Once
-the lookup is done, the create node object has been passed to the
+the lookup is done, the created node object is passed to the
 `specialize(.)`, which will eventually replace the invocation node with our
 new `PrintlnNode`. This means, the print operation is directly inlined in the
 AST.
@@ -898,9 +908,10 @@ AST.
 In this post, many basic Truffle concepts have been introduced. From the basic
 AST nodes, over the design of a AST-based interpreter, arithmetic operations,
 control flow constructs, until function calls, we covered everything we needed
-to execute a simple Fibonacci function.
+to execute a simple Fibonacci function. For more on the basic mechanisms, the
+paper on [Self-Optimizing AST Interpreters][6] is certainly worth a read.
 
-The code for this post is available on the [truffle/fib][5] branch. With the
+The code for this post is available on the [truffle/fib][5] branch. And with the
 following steps, it should be possible to execute the `fib.golo` program:
 
 ```bash
@@ -908,9 +919,57 @@ following steps, it should be possible to execute the `fib.golo` program:
 build/install/golo/bin/golo golo --truffle --files samples/fib.golo
 ```
 
-As the result, it should print `55` and exit cleanly.
+If everything works out, it should print `55` and exit cleanly.
 
-   -> interpretation mindset vs. compilation mindset
+In the next post, we will see the remaining features that are needed to get our
+Mandelbrot program running. But before we close for today, I wanted to briefly
+point at the differences between the bytecode generation in the last post, and
+how Truffle interpreters work. From my perspective, the two approaches require
+quite a bit of a different mind set. When generating bytecodes, one has to be
+very aware of how the Java Virtual Machines works. Specifically, we have to
+constantly track in our mind how it interacts with the stack, what the effect
+is of the bytecode that is eventually executing, and so on. To truly understand
+it, we need to be in a mindset for *compilation*. Thus, we need to imagine how
+the JVM executes and then generate instructions for it so that it does what we
+want.
+  
+With a Truffle-style interpreter on the other hand, we do only need to imagine
+what we want to do, and than can codify it in *normal* Java. We do not have to
+imagine an external machine that is doing something on our behalves, instead we
+just need to imagine what needs to be done for a specific piece of input
+program. Of course, this only goes so far. With the Graal compiler in the mix,
+we actually need a pretty good understanding of how the optimizers work, but at
+least we do not need to mess with a stack machine.
+
+
+### Truffle Concepts, Conventions, and Other Important Bits
+
+ - `@TypeSystem` ([sec. 4](#types-class)) used by the TruffleDSL to know types
+   for specializations
+ - `execute*()` methods ([sec. 4](#execute-methods)) implement semantics for an
+   expected return type
+ - `executeEvaluated(...)` methods ([sec. 6.2](#exec-evaluated)) are a 
+   convention used by Truffle to implement a node's semantics taking all
+   subexpressions already fully evaluated.
+ - `@Specialization`, ([sec. 5.1](#dsl-and-specializations)) annotation of the DSL to generate the node for this
+   functionality, i.e., optimized variant of a generic operation
+ - `@Children` ([sec. 4.1](#sequences)), marks subnodes to allow framework to
+   do correct node replacement in AST, and implicitly compilation final
+ - `@NodeChildren`, `@NodeChild` ([sec. 5.1](#dsl-and-specializations)),
+   annotation of the DSL to add subnodes in generate code
+ - abstract `get*()` methods, for instance `getLeft()` and `getRight()`
+   DSL generates implementations to be able to reference a subnode that
+   is managed by DSL
+ - `@ExplodeLoop` ([sec. 4.1](#sequences)), annotation to ask for unrolling of
+   loop during compilation
+ - `@CompilationFinal`, annotation to mark a field as final for the Graal
+   compiler even so it cannot be marked with the keyword `final`, for instance
+   because of lazy initialization
+ - `ControlFlowException` ([sec. 5.2](#return)), the root class for all
+   exceptions that are expressing control flow in a Truffle AST, optimized to
+   avoid runtime overhead
+ - nodes can be only part of an AST once, because they only have one parent
+
 
 
 <script type="text/javascript">
@@ -944,3 +1003,4 @@ SyntaxHighlighter.all();
 [3]: https://github.com/smarr/golo-lang/commit/c7ae9dadfbf7637a3b28d3cdee95dc3dce05a479
 [4]: https://github.com/smarr/golo-lang/commit/2555d36ab4bb1b70c474a0f5daab5572bbde14ef#diff-cf9331a1bfcb60bdcce419870c115221R56
 [5]: https://github.com/smarr/golo-lang/tree/truffle/fib
+[6]: http://lafo.ssw.uni-linz.ac.at/papers/2012_DLS_SelfOptimizingASTInterpreters.pdf
