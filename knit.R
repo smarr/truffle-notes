@@ -14,7 +14,7 @@ silence <- knit2html(
        max-width:   40em;
        margin:      auto;
     }
-    p { 
+    p,li { 
         font-family: Lora,"Times New Roman",serif;
         font-weight: 400;
         font-size: 14pt;
@@ -47,6 +47,15 @@ silence <- knit2html(
     
     img {
         margin: auto;
+        display: block;
+    }
+    
+    .sidenote {
+        position: absolute;
+        padding-left: 44em;
+        width: 10em;
+        font-size: 80%;
+        text-align: left;
         display: block;
     }
     
