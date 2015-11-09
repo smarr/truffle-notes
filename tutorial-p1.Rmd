@@ -3,6 +3,16 @@
 Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps
 ==============================================================
 
+Over the course of the next four weeks, I plan to publish a new post every
+Tuesday to give a detailed introduction on how to use the Graal compiler and
+the Truffle framework to build fast languages. And this is the very first post
+to setup this series. The next posts are going to provide a bit of background
+on Golo, the language we are experimenting with, then build up the basic
+interpreter for executing a simple Fibonacci and later a Mandelbrot
+computation. To round off the series, we will also discuss how to use one of
+the tools that come with Graal to optimize the performance of an interpreter.
+But for today, let's start with the basics.
+
 ## What Is Graal JIT Compilation and How Can It Be Useful?
 
 [Graal][2] is a just-in-time compiler for the Java Virtual Machine (JVM),
