@@ -149,13 +149,14 @@ Before we start adding Graal support, the next part of this blog post series
 looks briefly into the current Golo implementation. It compiles Golo directly
 to JVM bytecodes and relies heavily on `invokedynamic` to realize the dynamic
 language semantics. Interestingly, Golo does not have bit operations. We'll use
-that as an excuse to we will get a basic idea of how the implementation works
+that as an excuse to get a basic idea of how the implementation works
 and then can compare it later to the Graal+Truffle version.
 
 ## Acknowledgements
 
 I'd like to thank [Julien Ponge](https://julien.ponge.org/) for his comments on
-drafts of this tutorial and his help with the technical details of Golo.
+drafts of this tutorial and his help with the technical details of Golo. And I'd
+also like to thank Benoit and Thomas F. from the [SSW](http://ssw.jku.at/) for their comments.
 
 [1]: https://github.com/OracleLabs/Truffle
 [2]: http://openjdk.java.net/projects/graal/
