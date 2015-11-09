@@ -66,6 +66,11 @@ while (y < size) {
         escape = 0;
         break;
       }
+      z += 1;
+    }
+
+    byte_acc = (byte_acc << 1) | escape;
+    bit_num += 1;
 // remainder left out for brevity
 ```
 
