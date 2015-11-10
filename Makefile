@@ -11,3 +11,6 @@ all: $(TARGET)
 
 clean:
 	rm *.html *.md
+
+upload: all
+	scp tutorial-p*.html ts:www-truffle/tutorial/
