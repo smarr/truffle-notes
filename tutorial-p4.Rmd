@@ -5,7 +5,7 @@ Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps
 
 # Step 4: Complete Support for Mandelbrot
 
-In the the [previous post][0] of this series, we built up all the
+In the [previous post][0] of this series, we built up all the
 infrastructure to execute a simple Fibonacci function with a Truffle interpreter
 for Golo. This included an introduction to the basic aspects of Truffle, its
 support for specializations, the idiomatic ways for realizing sequences,
@@ -39,6 +39,11 @@ while (y < size) {
         escape = 0;
         break;
       }
+      z += 1;
+    }
+
+    byte_acc = (byte_acc << 1) | escape;
+    bit_num += 1;
 // remainder left out for brevity
 ```
 
@@ -339,16 +344,9 @@ abstract class LocalVariableWriteNode extends ExpressionNode {
   
   @Specialization
   public Object writeGeneric(VirtualFrame frame, Object exprValue) {
-    ensureObjectKind();
+    slot.setKind(FrameSlotKind.Object);
     frame.setObject(slot, exprValue);
     return exprValue;
-  }
-
-  protected void ensureObjectKind() {
-    if (slot.getKind() != FrameSlotKind.Object) {
-      CompilerDirectives.transferToInterpreterAndInvalidate();
-      slot.setKind(FrameSlotKind.Object);
-    }
   }
 }
 ```
@@ -567,7 +565,7 @@ library(ggplot2)
 library(plyr)
 times_java_ns <- c(108918, 109289, 108809, 114980, 104198, 107264, 108012, 109215, 104651, 107225, 105856)
 times_golo_ns <- c(526187, 506568, 519333, 515142, 511595, 512679, 522535, 488186, 511581, 502145, 515739)
-times_truf_ns <- c(170372, 174281, 170803, 169305, 173985, 165851, 172163, 164394, 171147, 172138, 169704)
+times_truf_ns <- c(559653, 577491, 464769, 482834, 478944, 473505, 495229, 475329, 516813, 509833, 517418)
 
 
 data <- data.frame(VM = c(rep("Java", 11), rep("Golo", 11), rep("Golo+Graal", 11)), Time.ns = c(times_java_ns, times_golo_ns, times_truf_ns), stringsAsFactors = TRUE)
@@ -591,12 +589,11 @@ On Java, Mandelbrot takes about `r round(j)`ms to execute. With Golo's bytecode
 compilation backend, it takes about `r round(g)`ms. And, as we can see on the
 plot above, Golo running with the Truffle-based interpreter on top of Truffle
 takes about `r round(t)`ms. This means, our Golo+Graal is about
-`r round(g/t,1)`x faster than the bytecode-based version. And only about
-`r round(t/j,1)`x slower than the pure Java benchmark.
+the same speed as the bytecode-based version.
 
-In the next post, we'll try to close the gap to Java a little more by
-investigating how the compilation works, and removing one source for overhead
-we have not optimized for yet.
+In the next post, we'll investigate how the compilation works, and optimize our
+interpreter. It should not be much slower than Java, which it unfortunately
+still is. But more on that next time.
 
 <pre>
 
