@@ -1,12 +1,13 @@
+SOURCE=$(wildcard *.Rmd)
+TARGET=$(SOURCE:.Rmd=.html)
+
 run: all
 
-all:
-	./knit.R tutorial-p4.Rmd
-	# osascript -e 'tell application "Google Chrome" to activate'
+%.html: %.Rmd
+	./knit.R $<
+
+all: $(TARGET)
 	osascript -e 'tell application "Google Chrome" to reload active tab of window 1'
-	./knit.R tutorial-p1.Rmd
-	./knit.R tutorial-p2.Rmd
-	./knit.R tutorial-p3.Rmd
 
 clean:
 	rm *.html *.md
