@@ -451,8 +451,10 @@ unwind the stack and return from the function. So, in case of the `return n`
 expression in the `fib` function, this means, we read the argument, wrap the
 result into an exception object that is than thrown. And that's basically it.
 To see how the exception is caught, see [section 6.5](#truffle-function) on
-implementing the `Function` class.
-
+implementing the `Function` class. Note, we did not mark the `expr` field as 
+final. Since the expression node is supposed to specialize itself during
+execution, it needs to mutate this field. For the compilation, the `@Child`
+annotation is sufficient to consider the field as a constant for optimization.
 
 ### Addition and Subtraction Operators
 
