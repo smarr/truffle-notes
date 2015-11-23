@@ -38,10 +38,17 @@ dependencies are configured in the `build.gradle` file. We need to add the
 Truffle jar as a `compile` dependency. Furthermore, we need a build plugin to
 enable annotation processing support for the TruffleDSL. The DSL uses
 annotations to generate implementation classes for us. Since the DSL itself
-also depends on Truffle, the Truffle jar needs to be registered as a `apt` 
-dependency as well:
+also depends on Truffle, the Truffle jar needs to be registered as an `apt` 
+dependency as well. Note, at the moment we also need to use a custom Maven repository with the latest Truffle jars:
 
 ```gradle
+repositories {
+  maven {
+    url "http://lafo.ssw.uni-linz.ac.at/nexus/content/repositories/releases/"
+  }
+  jcenter()
+}
+
 plugins {
   // ...
   id "net.ltgt.apt" version "0.3"
@@ -59,7 +66,7 @@ dependencies {
 
 ## Working in the Debugger
 
-The next step might seem superflous, but it is going to be extremely useful.
+The next step might seem superfluous, but it is going to be extremely useful.
 The first class we add to the Golo codebase is a `NotYetImplemented` exception:
 
 ```java
@@ -134,16 +141,17 @@ details of creating a function object later.
 
 The first element we need is a common root node for all possible AST nodes. In
 Golo's IR, the corresponding class is essentially `GoloStatement`. For our
-purposes we add `ExpressionNode`,<sup>1</sup><span class="sidenote"><sup>1</sup>
-We use the term *expression* here, because most nodes will need to
-provide a return value for the `execute*()` methods.</span> which needs to
-extend Truffle's `Node` class. This `ExpressionNode` needs to provide a set of
-`execute*(frame)` methods. The `execute*()` methods implement the semantics of
-an AST node. To be able to specialize the behavior of a node on the kind of
-value it should return, the `ExpressionNode` provides a set of basic
-implementations for all the types we want to be able to specialize on. These
-types are communicated explicitly to the TruffleDSL to facilitate code
-generation. We do this with the following `Types` class:
+purposes we add `ExpressionNode`,<sup>1</sup><span
+class="sidenote"><sup>1</sup> We use the term *expression* here, because most
+nodes will need to provide a return value for the `execute*()` methods.</span>
+which needs to extend Truffle's `Node` class. This `ExpressionNode` needs to
+provide a set of `execute*(frame)` methods. The `execute*()` methods implement
+the semantics of an AST node. To be able to specialize the behavior of a node
+on the kind of value it should return, the `ExpressionNode` provides a set of
+basic implementations for the types we want to be able to specialize on as
+return types for expressions. These types are communicated explicitly to the
+TruffleDSL to generate some type-checking helper methods. We do this with the
+following `Types` class:
 
 <a id="types-class"></a>
 
@@ -181,14 +189,17 @@ public abstract class ExpressionNode extends Node {
 }
 ```
 
-The abstract `executeGeneric(frame)` method on the second line is the
-generic execute method each AST node needs to implement. The other three
-type-specific methods can be implemented if it makes sense for a node.
-Otherwise, the fallback implementation provided here will call
-`executeGeneric(.)`, and then check that the result is of the expected type.
-This mechanism is useful for optimistic, i.e., speculative optimizations, which
-might not hold for all future executions of a node. We'll go into more details
-on this later.
+The abstract `executeGeneric(frame)` method on the second line is the generic
+execute method each AST node needs to implement. The other three type-specific
+methods can be implemented if it makes sense for a node. Otherwise, the
+fallback implementation provided here will call `executeGeneric(.)`, and then
+check that the result is of the expected type. For the check, we use the
+`expect*()` methods, which are generated from the `Types` class. Technically it
+is optional, but avoids some boilerplate code.
+
+Generally, these fallback methods are useful for optimistic, i.e., speculative
+optimizations, which might not hold for all future executions of a node. We'll
+go into more details on this later.
 
 One might also notice the `frame` argument. The frame is the *activation record*
 of a Truffle function and is used to access the actual arguments to a function
@@ -228,11 +239,14 @@ For the Truffle framework, it is important that the `expressions` field of the
 class is annotated with `@Children` so that specializations are handled
 correctly and so that the Graal compiler knows these expressions can be
 considered constant. The `final` keyword is here not strictly necessary, but in
-general it is good practice to make node fields final whenever possible to
-facilitate constant folding during compilation.
+general it is good practice to make fields final whenever possible to
+facilitate constant folding during compilation.<sup>2</sup><span
+class="sidenote"><sup>2</sup> Fields annotated with `@Child` cannot be `final`,
+because they need to be able to specialize themselves, and the compiler treats
+them specially.</span>
 
 The `executeGeneric(.)` method iterates over these child expressions and
-recursively calls `executeGeneric(.)`. For the last expression is different, 
+recursively calls `executeGeneric(.)`. The last expression is different, 
 because we need to return its result value.
 
 To enable the Graal compiler later on to optimize this code as much as
@@ -246,7 +260,7 @@ and thus constant. Depending on language semantics, this might for instance
 also apply to the processing of function arguments, as we will see later.
 
 Note, while stepping through the debugger, the block we encountered should be
-the on that contains the `if ... {} else {}` construct of the `fib` function,
+the one that contains the `if ... {} else {}` construct of the `fib` function,
 which we dive into now.
 
 ### Argument Reads
@@ -319,7 +333,7 @@ The DSL provides the notions of nodes and their children, i.e., subexpressions.
 Furthermore, it enables us to implement *specializations* based on types as
 well as other runtime information. The previously discussed `execute*()`
 methods are essentially the interface to subnodes. Using this interface, the
-DSL generate the self-specializing code to instantiate node objects, provide
+DSL generates the self-specializing code to instantiate node objects, provide
 the specialization checks, evaluate subnodes, do node rewriting, and handle
 potential polymorphism, i.e., the case that more than one specialization is
 required for a specific point in the program (AST node).
@@ -463,7 +477,7 @@ Moving on in the debugger should get us back to the
 processing the else branch: `return fib(n - 1) + fib(n - 2)`. Handling the
 `return` was just covered. So, the next elements of interest are the binary
 operators `+` and `-`. They are implemented essentially in the same way as the
-less-than operator `<`. We use the TruffleDSL and it's support for
+less-than operator `<`. We use the TruffleDSL and its support for
 specializations:
 
 ```java
@@ -502,8 +516,8 @@ The generation of the `fib(.)` function invocations are handled by
 `visitFunctionInvocation(.)`. As the first step, it needs to transform the
 argument expression of the function call. Ignoring Golo's named arguments, we
 can transform the argument expressions into a plain `ExpressionNode[]`. To
-avoid having different function invocation nodes for different number of
-arguments, we introduce a `EvalArgumentsNode` that will create an array of
+avoid having different function invocation nodes for different numbers of
+arguments, we introduce an `EvalArgumentsNode` that will create an array of
 objects that is passed to the function call. That's also the reason why we
 needed the `Object[]` type in our [`Types` class](#types-class) earlier.
 
@@ -663,19 +677,19 @@ Our `UninitializedInvocationNode` class implements the abstract
 arguments, passes them to the `specialize(.)` function, and then delegates the
 evaluation to the resulting node by calling `doEvaluated(.,.)`. The
 `specialize(.)` function performs the lookup, and then based on the lookup
-result, it choses an appropriate implementation for the invocation. At this
+result, it chooses an appropriate implementation for the invocation. At this
 point, we only need the two previously discussed ways for invocation. The
 first one is the `DirectFunctionInvokeNode`. In case the lookup result was a
 Golo+Truffle function, we instantiate the invocation node and `replace(.)` the
 `UninitializedInvocationNode` node, i.e., the current `this` with it.
 
 Just as a side note, the *direct* use of `replace(.)` is only advisable for
-advanced use case and requires extra care. Normally, the DSL shields us from
+advanced use cases and requires extra care. Normally, the DSL shields us from
 this operation. `replace(.)` is going to adapt the AST and makes sure that the
 parent pointer in the newly inserted node is set correctly. It also performs a
 few checks to make sure the replacement is legal. If the parent node's field
 type is not compatible with the new node, we will get an error. While there are
-such safeguards, we have to manually make sure that a node is only used once
+such safeguards, we have to manually make sure that a node is only used once in
 the AST. This is required because the nodes can only have a single parent, which
 is required to make the specialization logic work.
 
@@ -715,18 +729,18 @@ executable elements, and define the calling convention. Without going into the
 details of the `Function` implementation already, our Truffle `Function`s will
 cache such a `CallTarget` that is used in `DirectCallNode`s. These nodes are
 created, as shown here, by the Truffle runtime. They represent statically bound
-calls, and communicate this knowledge to the compiler.<sup>3</sup><span
-class="sidenote"><sup>3</sup> They can also
+calls, and communicate this knowledge to the compiler.<sup>4</sup><span
+class="sidenote"><sup>4</sup> They can also
 be used, for instance in combination with the `@Cached` annotation to build
 polymorphic inline caches.</span> When a call-site is highly variable
 (megamorphic), i.e., corresponds to many different functions, we could use the
 `IndirectCallNode` instead. In that case, the optimizer would not
-perform inlining, because it would most likely down execution.
+perform inlining, because it would most likely slow down execution.
 
 With this support for function invocation, we can transform the
 remainder of the `fib()` function. Stepping through the debugger should
 eventually lead us back to `visitReturnStatement()` where the `ReturnNode` for
-the else branch is create. After this is done, we are finally back at
+the else branch is created. After this is done, we are finally back at
 `visitBlock(.)`, where the `SequenceNode` for the block of the else branch is
 created.
 
@@ -779,15 +793,15 @@ issue for performance, because the compiler knows from the `@Child` annotation
 that it can consider the value of `elseNode` as a constant. Thus, the null
 check will be removed during compilation.
 
-Evaluating the condition is actually a little more complex.<sup>4</sup><span
-class="sidenote"><sup>4</sup> I refrained 
+Evaluating the condition is actually a little more complex.<sup>5</sup><span
+class="sidenote"><sup>5</sup> I refrained 
 from putting in a `ConditionProfile` to avoid additional complexity.
 But usually it is a good idea, e.g., to enable elimination of unused branches.</span> The
 `doCondition(.)` method needs to handle the case that the condition does not
 actually return a boolean value. With Golo being a dynamic language, this could
 of course happen at runtime. For our purposes, we do not provide a fallback
 implementation, but instead just raise an error. Hence, if `executeBoolean(.)`
-fails, we catch a `UnexpectedResultException` and simply throw an
+fails, we catch an `UnexpectedResultException` and simply throw an
 `UnsupportedSpecializationException`.
 
 Note, the first operation in the catch clause is
@@ -836,7 +850,7 @@ Truffle ASTs. In the case of Golo, a `Function` is simply referring to some
 `ExpressionNode` that we ask to execute. As you can see in the `execute(.)`,
 this is also the right place to handle the `ReturnException`. The `Function` is
 the inner part of the call boundary. Hence, we catch the exception, ask it for
-the result and can than return it. In case there was no exception, we simply
+the result and can then return it. In case there was no exception, we simply
 return the value to which the `expr` node evaluated.
 
 Previously, we also discussed the `CallTarget` as Truffle's mechanism to
@@ -899,7 +913,7 @@ Since the `Predefined` class is completely under our control, we can provide
 this node implementation for `println(.)`. In the lookup routine, we test
 whether the class on which the lookup is done is the `Predefined` class, and in
 case it is, and the desired function is `"println"`, we instantiate a
-`PrintlnNode`. Note here that the TruffleDSL generate the implementation with
+`PrintlnNode`. Note here that the TruffleDSL generated the implementation with
 the name `PrintlnNodeGen`. This class has a factory method `create(expr)` that
 takes the argument expression. In our case, we execute this code as part of the
 `UninitializedInvocationNode` that has the argument expressions stored in
@@ -912,7 +926,7 @@ AST.
 ## Wrap Up and Conclusions 
 
 In this post, many basic Truffle concepts have been introduced. From the basic
-AST nodes, over the design of a AST-based interpreter, arithmetic operations,
+AST nodes, over the design of an AST-based interpreter, arithmetic operations,
 control flow constructs, until function calls, we covered everything we needed
 to execute a simple Fibonacci function. For more on the basic mechanisms, the
 paper on [Self-Optimizing AST Interpreters][6] is certainly worth a read.
@@ -931,7 +945,7 @@ In the next post, we will see the remaining features that are needed to get our
 Mandelbrot program running. But before we close for today, I wanted to briefly
 point at the differences between the bytecode generation in the last post, and
 how Truffle interpreters work. From my perspective, the two approaches require
-quite a bit of a different mind set. When generating bytecodes, one has to be
+quite a bit of a different mindset. When generating bytecodes, one has to be
 very aware of how the Java Virtual Machines works. Specifically, we have to
 constantly track in our mind how it interacts with the stack, what the effect
 is of the bytecode that is eventually executing, and so on. To truly understand
@@ -940,7 +954,7 @@ the JVM executes and then generate instructions for it so that it does what we
 want.
   
 With a Truffle-style interpreter on the other hand, we do only need to imagine
-what we want to do, and than can codify it in *normal* Java. We do not have to
+what we want to do, and then can codify it in *normal* Java. We do not have to
 imagine an external machine that is doing something on our behalves, instead we
 just need to imagine what needs to be done for a specific piece of input
 program. Of course, this only goes so far. With the Graal compiler in the mix,
@@ -959,8 +973,9 @@ least we do not need to mess with a stack machine.
    subexpressions already fully evaluated.
  - `@Specialization`, ([sec. 5.1](#dsl-and-specializations)) annotation of the DSL to generate the node for this
    functionality, i.e., optimized variant of a generic operation
- - `@Children` ([sec. 4.1](#sequences)), marks subnodes to allow framework to
-   do correct node replacement in AST, and implicitly compilation final
+ - `@Children` and `@Child` ([sec. 4.1](#sequences)) mark subnodes to allow
+   framework to do correct node replacement in AST. They are implicitly
+   compilation final.
  - `@NodeChildren`, `@NodeChild` ([sec. 5.1](#dsl-and-specializations)),
    annotation of the DSL to add subnodes in generate code
  - abstract `get*()` methods, for instance `getLeft()` and `getRight()`
@@ -1003,7 +1018,7 @@ SyntaxHighlighter.all();
 <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
 </p>
 
-[0]: http://todo
+[0]: http://stefan-marr.de/2015/11/add-graal-jit-compilation-to-your-jvm-language-in-5-easy-steps-step-1/
 [1]: http://lafo.ssw.uni-linz.ac.at/builds
 [2]: https://github.com/smarr/golo-lang/commit/7bfb2077fce0af7eb59f89de97014d89d2c1e42b#diff-e689f3cf6b37868e27f7b42d13cfc3a1R43
 [3]: https://github.com/smarr/golo-lang/commit/c7ae9dadfbf7637a3b28d3cdee95dc3dce05a479
