@@ -192,7 +192,7 @@ SyntaxHighlighter.all();
 <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" property="dct:title">&ldquo;Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps&rdquo;</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" property="cc:attributionName" rel="cc:attributionURL">Stefan Marr</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Permissions beyond the scope of this license are available on <a xmlns:cc="http://creativecommons.org/ns#" href="http://stefan-marr.de/" rel="cc:morePermissions">request</a>.
 </p>
 
-[0]: http://todo
+[0]: http://stefan-marr.de/2015/11/add-graal-jit-compilation-to-your-jvm-language-in-5-easy-steps-step-1/
 [1]: https://julien.ponge.org/files/publications/golo-pppj13.pdf
 [2]: https://javacc.java.net/
 [3]: https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_Form
