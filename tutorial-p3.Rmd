@@ -991,6 +991,13 @@ least we do not need to mess with a stack machine.
    avoid runtime overhead
  - nodes can be only part of an AST once, because they only have one parent
 
+## Acknowledgements
+
+I'd like to thank [Julien Ponge](https://julien.ponge.org/) for his comments on
+drafts of this tutorial and his help with the technical details of Golo.
+Furthermore, I'd like to Andreas Wöß for his comments and clarifications of
+Truffle-related details.
+
 
 
 <script type="text/javascript">
