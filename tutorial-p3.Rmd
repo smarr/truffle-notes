@@ -3,7 +3,7 @@
 Add Graal JIT Compilation to Your JVM Language in 5 Easy Steps
 ==============================================================
 
-# Step 3: Initial Infrastructure and Supporting a Simple Fibonacci Function
+# Step 3: Interpreting a Simple Fibonacci Function with Golo+Truffle
 
 First, a word of warning. This post is much longer than I had hoped. The goal
 for today is to be able to execute a Fibonacci function with Golo+Truffle.
