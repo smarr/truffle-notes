@@ -1,0 +1,106 @@
+Type Hierarchies and Guards
+===========================
+
+This note is based on my observations in [SOMns][9] and changes to its [message
+dispatch mechanism][2]. Specifically, I refactored the main message dispatch
+chain in SOMns. As in Self and Newspeak, all interactions with objects are
+message sends. Thus, field access and method invocation is essentially the
+same. This means that message sending is a key to good performance.
+
+In my previous design, I structured the dispatch chain in a way that, I
+thought, I'd reduce the necessary runtime checks. This design decision still
+came from [TruffleSOM][4] where the class hierarchy was much simpler and it
+still seems to work.
+
+My *naive* design distinguished two different cases. One case is that the
+receiver is a standard Java objects, for instance boxed primitives such as
+`longs` and `doubles`, or other Java objects that is used directly. The second
+case is objects from my own hierarchy of Smalltalk objects under
+[`SAbstractObject`][5].
+
+The hierarchy is a little more involved, it includes the [abstract class][5], a
+class for objects that have a Smalltalk class [`SObjectWithClass`][6], a [class
+for objects without fields][7], for [objects with fields][8], and that one is
+then again subclassed by classes for mutable and immutable objects. There are
+still a few more details to it, but I think you get the idea.
+
+So, with that, I thought, let's structure the dispatch chain like this,
+starting with a message send node as its root:
+
+```
+MsgSend
+ -> JavaRcvr
+ -> JavaRcvr
+ -> CheckIsSOMObject
+     \-> UninitializedJavaRcvr
+ -> SOMRcvr
+ -> SOMRcvr
+ -> UninitializedSOMRcvr
+```
+
+This represents a dispatch chain for a message send site that has seen four
+different receivers, two primitive types, and two Smalltalk types. This
+could be the case for instance for the polymorphic `+` message.
+
+The main idea was to split the chain in two parts so that I avoid checking
+for the SOM object more than once, and then can just cast the receiver to
+`SObjectWithClass` in the second part of the chain to be able to read the
+Smalltalk class from it.
+
+Now it turns out, *this is not the best idea*. The main problem is that
+`SObjectWithClass` is not a leaf class in my SOMns hierarchy (this is the case
+in TruffleSOM though, where it originates). This means, at runtime, the check,
+i.e., the guard for `SObjectWithClass` can be expensive. When I looked at the
+compilation in IGV, I saw many `instanceof` checks that could not be removed
+and resulted in runtime traversal of the class hierarchy, to confirm that a
+specific concrete class was indeed a subclass of `SObjectWithClass`.
+
+In order to avoid these expensive checks, I refactored the dispatch nodes to
+extract the [guard into its own node][1] that does only the minimal amount
+of work for each specific case. And it only ever checks for the specific
+leaf class of my hierarchy that is expected for a specific receiver.
+
+This also means, the new dispatch chain is not separated in parts anymore as
+it was before. Instead, the nodes are simply added in the order in which
+the different receiver types are observed over time.
+
+Overall the [performance impact is rather large][3]. I saw on the Richards
+benchmark a gain of 10% and on DeltaBlue about 20%. Unfortunately [my
+refactoring][2] also changed a few other details beside the changes related
+to `instanceof` and casts. It also made the guards for objects with fields
+depend on the object layout instead of the class, which avoids having
+multiple guards for essentially the same constraint further down the road.
+
+So, the main take-away here is that the choice of guard types can have a
+major performance impact. I also had a couple of other `@Specialization`
+nodes that were using non-leaf classes. For instance like this:
+`@Specialization public Object doSOMObject(SObjectWithClass rcvr) {...}`
+
+This looks inconspicuous at first, but fixing those and a few other things
+resulted in overall runtime reduction on multiple benchmarks between 20%
+and 30%.
+
+A good way to find these issues is to see in IGV that `instanceof` or
+checked cast snippets are inlined and not completely removed. Often they
+are already visible in the list of phases when the snippets are resolved.
+Another way to identify them is the use of the Graal option
+`-Dgraal.option.TraceTrufflePerformanceWarnings=true` (I guess that would
+be `-G:+TraceTrufflePerformanceWarnings` when mx is used). The output names
+the specific non-leaf node checks that have been found in the graph. Not
+all of them are critical, because they can be removed by later phases. To
+check that, you can use the id of the node from the output and search for
+it in the corresponding IGV graph using for instance `id=3235` in the
+search field.
+
+
+
+[1]: https://github.com/smarr/SOMns/blob/master/src/som/interpreter/nodes/dispatch/DispatchGuard.java
+[2]: https://github.com/smarr/SOMns/commit/a6d57fd1a4d7d8b2ce28927607ea41a52a171760 
+
+[3]: http://somns-speed.stefan-marr.de/changes/?rev=bb54b1effe&exe=14&env=1
+[4]: https://github.com/SOM-st/TruffleSOM
+[5]: https://github.com/smarr/SOMns/blob/master/src/som/vmobjects/SAbstractObject.java
+[6]: https://github.com/smarr/SOMns/blob/master/src/som/vmobjects/SObjectWithClass.java
+[7]: https://github.com/smarr/SOMns/blob/master/src/som/vmobjects/SObjectWithClass.java#L51
+[8]: https://github.com/smarr/SOMns/blob/master/src/som/vmobjects/SObject.java#L45
+[9]: https://github.com/smarr/SOMns#somns---a-simple-newspeak-implementation
