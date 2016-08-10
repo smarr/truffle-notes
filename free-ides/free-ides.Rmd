@@ -234,12 +234,16 @@ the bottom up approach. Instead of specifying my language, I'd rather express
 the one truth of its semantics as an interpreter. In the end, I want to execute
 programs. So, let's start there.
 
-**Acknowledgments**
+**PS**
 
 I'd like to thank [Michael L. Van De Vanter][14] for discussions on the topic.
-The code for my experiments with the LSP and SOMns is available on GitHub in
-the [SOMns-vscode][15] project. So far, I haven't tried to integrate it with
-Truffle however.
+The code for my experiments with the language server protocol and SOMns are
+available on GitHub as part of the [SOMns-vscode][15] project. So far, I
+haven't tried to integrate it with Truffle however.
+
+And I have to admit, I am currently mostly focusing on the [MetaConc][16] 
+project, where we aim a little higher and try to go beyond what people come to
+expect when debugging concurrent applications.
 
 **References**
 
@@ -264,3 +268,4 @@ Truffle however.
 [13]: https://github.com/smarr/SOMns
 [14]: http://vandevanter.net/mlvdv/
 [15]: https://github.com/smarr/SOMns-vscode/tree/master/server
+[16]: http://ssw.jku.at/Research/Projects/MetaConc/
