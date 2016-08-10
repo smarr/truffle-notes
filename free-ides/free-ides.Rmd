@@ -11,7 +11,7 @@ get IDE integration for our Truffle languages as well?_
 
 In case you wonder, this is inspired by the [language server protocol][3]
 project of Microsoft, RedHat, Eclipse Che, and others. Their goal is to develop
-a language agnostic protocol that connects so-called _language servers_ to IDEs.
+a language-agnostic protocol that connects so-called _language servers_ to IDEs.
 That made me wonder whether we could provide the infrastructure needed for such
 a language server as part of Truffle.
 
@@ -34,7 +34,7 @@ Features that are not strictly related to execution are however not supported.
 In the research community, this area is something where [Language Workbench
 projects][1] [[1]] excel. They often come with their own domain-specific
 languages to define language grammars, and use transformation or compilation
-approaches to generate from such specification a wide ranges of tools.
+approaches to generate a wide ranges of tools from such specification.
 
 The tools I find most essential for an IDE include:
  - support for highlighting (syntactic and semantic)
@@ -76,10 +76,10 @@ instance on the command line to enable basic programming.
 <img style="width:75%" src="figures/symbol-info.png" alt="Navigating a file based on its program entities">
 </figure>
 
-The other features are clearly more language specific, as is the last example
+The other features are clearly more language-specific, as is the last example
 above, the browsing of a file based on the entities it defines. However, most
 of these elements can be mapped onto a common set of concepts that can be
-handled in a language agnostic way in an IDE.
+handled in a language-agnostic way in an IDE.
 
 While the [DynSem][9] project might bring all these generation-based features
 to Truffle languages, I wonder whether we can do more in a bottom-up approach
@@ -197,8 +197,8 @@ I haven't really experimented with these aspects, but there seems to be a
 language-specific and a language-agnostic component to it. The
 language-specific component would be to identify the entities that need to be
 changed by a quick fix or refactoring, as well as determining the replacement.
-The actual operation however seems to be fairly language independent and could
-be a services provided by a common infrastructure to change `Source`
+The actual operation however seems to be fairly language-independent and could
+be a service provided by a common infrastructure to change `Source`
 objects/files.
 
 ## Conclusion
@@ -213,20 +213,18 @@ However, there are also a couple of challenges that might be at odds with
 Truffle as a framework for languages that are mostly tuned for peak
 performance. In my own experience, adapting the SOMns parser to provide all the
 necessary information for highlighting, code completion, go to definition,
-etc., requires quite a few different design decisions than the straight-forward
-parsing that I did before to just directly construct the AST. On the one hand,
-I need to retain much more information than before. My Truffle ASTs are very
-basic and contain only elements relevant for execution. For editing in an IDE
-however, we want all the _declarative_ elements as well.
-
-Another aspect is that one probably wants a parser that is incremental, and
-perhaps works on the chunk that the editor identified as changed. If the parser
-wasn't designed from the start to work like
-that, this seems to require quite pervasive change to the parser. Similarly,
-one would need a different approach to parsing to continue after a parse error
-was found. On top of that comes the aspect of storing the desired information
-in an efficient data structure. Perhaps that is something where persistent data
-structures would be handy.
+etc., requires quite a few design decisions that depart from the
+straight-forward parsing that I did before to just directly construct the AST.
+On the one hand, I need to retain much more information than before. My Truffle
+ASTs are very basic and contain only elements relevant for execution. For
+editing in an IDE however, we want all the _declarative_ elements as well. On
+the other hand, one probably wants a parser that is incremental, and perhaps
+works on the chunk that the editor identified as changed. If the parser wasn't
+designed from the start to work like that, this seems to require quite
+pervasive changes to the parser. Similarly, one would need a different approach
+to parsing to continue after a parse error was found. On top of that comes the
+aspect of storing the desired information in an efficient data structure.
+Perhaps that is something where persistent data structures would be handy.
 
 While there are challenges and tradeoffs, for language implementers like me,
 this would be a great thing. I'd love to experiment with my language and still
@@ -236,6 +234,12 @@ the bottom up approach. Instead of specifying my language, I'd rather express
 the one truth of its semantics as an interpreter. In the end, I want to execute
 programs. So, let's start there.
 
+**Acknowledgments**
+
+I'd like to thank [Michael L. Van De Vanter][14] for discussions on the topic.
+The code for my experiments with the LSP and SOMns is available on GitHub in
+the [SOMns-vscode][15] project. So far, I haven't tried to integrate it with
+Truffle however.
 
 **References**
 
@@ -258,3 +262,5 @@ programs. So, let's start there.
 [11]: https://github.com/MetaConc/CoverallsTruffle#readme
 [12]: http://2016.ecoop.org/event/icooolps-2016-trufflereloader-a-low-overhead-language-neutral-reloader
 [13]: https://github.com/smarr/SOMns
+[14]: http://vandevanter.net/mlvdv/
+[15]: https://github.com/smarr/SOMns-vscode/tree/master/server
