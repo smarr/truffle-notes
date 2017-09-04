@@ -1,3 +1,10 @@
+<!--
+What's the goal of this article/post?
+
+ - show what's possible with truffle
+ - point out 'nice to have' things
+-->
+
 Building High-level Debuggers for Concurrent Languages with Truffle
 ===================================================================
 
@@ -27,9 +34,8 @@ Specifically, I am going into:
 1. custom breakpoint checks
 2. support for additional sequential stepping strategies
 3. support for activity-specific stepping strategies
-4. Java conditions for breakpoints
-5. expression breakpoints
-6. after breakpoint locations and step-after-root-node strategy
+4. expression breakpoints
+5. Java conditions for breakpoints
 
 ### Examples for High-level Breakpoints and Stepping
 
@@ -38,7 +44,7 @@ I am going to briefly give some examples of what wanted to achieve.
 
 Languages such as JavaScript or Newspeak have the notion of event loops.
 Event loops provide a convenient abstraction to handle lightweight concurrency,
-for instance to react to events generated in an user interface or from external sources.
+for instance to react to events generated in a user interface or from external sources.
 However when debugging such applications,
 the callback-based programming style, with or without promises,
 inverts the control flow, and it becomes hard to reason about programs in a natural way.
@@ -82,7 +88,7 @@ So, what exactly do we need in a Truffle language implementation
 to realize such breakpoints and stepping operations?
 
 
-### 1. Custom Breakpoint Checks
+### <a id="custom-bp"></a> 1. Custom Breakpoint Checks
 
 One of the features not provided by Truffle is the ability to check for
 breakpoint information within a language implementation.
@@ -238,13 +244,17 @@ because we need to remember the first root found,
 and only trigger a suspension when we are in the `AFTER_ROOT_NODE` location for the same root node,
 and for the same stack height.
 This is necessary to account for recursion.
+Note, the `AFTER_ROOT_NODE` location is also a custom addition
+and comes with the corresponding `AFTER_STATEMENT` location,
+which allow us to set breakpoints
+or step to the point after which a node is executed.
 
 Overall, I find stepping strategies a rather useful way of expressing
-what the debugger should do.
-Unfortunately, the current design in Truffle does not support any extension
-from by tools.
-While we only desired to step before and after root nodes for
-sequential so far,
+what the debugger should do,
+and stopping after the execution of a node seems also useful.
+Unfortunately, the current design in Truffle does not support any extension by tools.
+While we only desired to step before and after (root) nodes
+for sequential debugging so far,
 general stepping strategies are another topic.
 
 ### 3. Activity-specific Stepping Strategies
@@ -292,11 +302,90 @@ However, since we need different types of stepping strategies,
 it did not seem possible to integrate it into Truffle
 without approaching the question of how to design it in an extensible way.
 
-### 4. Java Conditions for Breakpoints
+### 4. Expression Breakpoints
 
+After talking about the dynamics of breakpoints
+let's briefly switch to setting breakpoints from a user interface.
+As you might imagine,
+that's somewhat relevant to support fancy breakpoints in an IDE
+and expose them to users.
+
+The biggest gap Truffle currently has here is
+that it misses an API to set breakpoints on expressions.
+Its `Breakpoint.Builder` currently only supports setting breakpoints on lines.
+If we consider the earlier JavaScript example with promises,
+we might want to set breakpoints on the `then(.)` or `resolve(.)` method calls,
+and perhaps chose what type of breakpoint to set.
+We could break just before executing the methods
+or when their consequences take effect.
+
+We actually take two different approaches to the problem.
+For some use cases, for instance breaking before a call to `resolve(.)`,
+we use a custom extension of the `Breakpoint.Builder`
+that supports filtering by source section in terms of line number, column,
+and section length, as well as a specific tag for the source section.
+So, in this case,
+we just rely on Truffle's breakpoints with a more fine-grained way of setting them.
+
+For other case, we completely manage the breakpoints ourselves
+with the aforementioned `BreakpointNode`, as discussed in [sec. 1](#custom-bp).
+
+### 5. Java Conditions for Breakpoints
+
+One final mechanism we rely on
+is the ability to set simple Java conditions on breakpoints.
+Currently, Truffle only supports setting conditions from the language itself.
+Thus, I could set a JavaScript condition to break on a line
+if some condition holds,
+for instance a variable has a certain value.
+However, there is no corresponding support to set conditions inside the implementation.
+
+Our use case it to set breakpoints on functions that are triggered my messages,
+or in JavaScript it would correspond to set a breakpoint specifically for the case
+that a function is directly executed from the even loop, i.e., as a callback.
+This can be helpful for stepping
+or to trigger a breakpoint only for the case one is specifically interested in.
+
+To realize this, we extended `Breakpoint` with a simple callback that returns a boolean.
+We use it to check whether the calling method is of a specific type,
+which signifies in SOMns that a method/function was activated via a message send,
+i.e., from the event loop.
+
+### Conclusion
+
+In this post, I discussed a number of things
+we need to do in [SOMns][SOMns]
+to get advanced breakpoints for various concurrency models.
+Some of these duplicate mechanisms in Truffle,
+which could perhaps just be leveraged if they would be designed to be more extensible.
+This includes the notion of breakpoints,
+which should allow the notion of different types on the same line/expression.
+It also includes nodes that allow run-time queries of a breakpoint status
+to propagate it as part of the application,
+and stepping strategies that can be queried and acted upon outside the Truffle AST,
+i.e., for instance as part of an event loop.
+
+The other things I am missing in Truffle could be offered
+by extending the existing implementation.
+This includes additional sequential stepping strategies and locations,
+expression breakpoints, and simple condition on breakpoints.
+
+These facilities could make a major difference
+for people interested in building better debuggers for dynamic languages.
+Looking at other people's debuggers, for instance [IntelliJ IDEA's Java support][intellij] or Chrome's [step into async][chrome-async],
+their extensions look cool and very helpful,
+but with the power we have in Truffle,
+they are more than trivial!
+It's a shame to leave all the potential unused.
+Dynamic languages such as Ruby, JavaScript, Python, or R
+could really benefit from great debuggers,
+because most productive development is done in the debugger,
+where you see what you do.
 
 [intro]: https://gist.github.com/smarr/d1f8f2101b5cc8e14e12
 [add-debugger]: http://stefan-marr.de/2016/04/adding-debugging-support-to-a-truffle-language/
 [truffle]: http://graalvm.github.io/graal
 [SOMns]: https://github.com/smarr/SOMns
 [KomposProtocol]: http://stefan-marr.de/papers/dls-marr-et-al-concurrency-agnostic-protocol-for-debugging/
+[intellij]: https://blog.jetbrains.com/idea/tag/debugger/
+[chrome-async]: https://developers.google.com/web/updates/2017/05/devtools-release-notes#step-into-async
