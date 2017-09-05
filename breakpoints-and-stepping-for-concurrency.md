@@ -1,10 +1,3 @@
-<!--
-What's the goal of this article/post?
-
- - show what's possible with truffle
- - point out 'nice to have' things
--->
-
 Building High-level Debuggers for Concurrent Languages with Truffle
 ===================================================================
 
@@ -40,7 +33,7 @@ Specifically, I am going into:
 ### Examples for High-level Breakpoints and Stepping
 
 Before I go into what we did and what Truffle could still provide,
-I am going to briefly give some examples of what wanted to achieve.
+I briefly give some examples of what wanted to achieve.
 
 Languages such as JavaScript or Newspeak have the notion of event loops.
 Event loops provide a convenient abstraction to handle lightweight concurrency,
@@ -62,7 +55,7 @@ we trigger the debugger as soon as the callbacks are executed.
 
 Let's look at a JavaScript example:
 
-```JavaScript
+{% highlight js linenos %}
 let rootPromise = new Promise((resolve, _) => {
   console.log("chance to capture resolve() and execute it");
   resolve("Promise done");
@@ -75,7 +68,7 @@ rootPromise.then(msg => {
   console.log("Step 2");
   return "Final step";
 });
-```
+{% endhighlight %}
 
 Ideally, we would be able to set a breakpoint on the `resolve()` call in line 3,
 which says that we want to break whenever a callback on the `rootPromise` is triggered.
@@ -108,7 +101,7 @@ we set a flag for the breakpoint on the 'message'
 that is going to lead to the promise resolution.
 This looks something like this:
 
-```Java
+```java
 @Child BreakpointNode promiseResolverBreakpoint;
 
 @Specialization
@@ -133,9 +126,10 @@ for the same source location,
 which is important if one wants more complex operations than
 single stepping and line breakpoints.
 
-The breakpoint node is roughly implemented as follows:
+The breakpoint node is roughly implemented as follows,
+skipping the breakpoint type here for brevity:
 
-```Java
+```java
 public abstract class BreakpointNode {
 
   protected final BreakpointEnabling bE;
@@ -192,7 +186,7 @@ For these cases, we simple construct a node marked with Truffle's `AlwaysHalt` t
 which ensures the debugger will trigger a breakpoint for us.
 After checking the condition, we simply execute the node like this:
 
-```Java
+```java
 @Specialization
 Object doSomethingComplex(...) {
   // ...
@@ -220,14 +214,14 @@ until it reaches a useful point.
 Fortunately, Truffle already has the notion of a `RootTag`
 to mark the first node of method that belongs to
 what a developer would consider
-the body of a method, i.e., ignoring possible pro- and epilogs.
+the body of a method, i.e., ignoring possible pro- and epilogues.
 
 We added a corresponding stepping strategy to Truffle to be able to say:
 execute this method until you reach the first node tagged with `RootTag`.
 
 This is implemented in the following class:
 
-```Java
+```java
 class StepUntilNextRootNode extends SteppingStrategy {
   @Override
   boolean step(DebuggerSession s, EventContext ctx, SteppingLocation location) {
@@ -282,7 +276,7 @@ we rely on a check in the `BreakpointNode`.
 The previously shown code of `BreakpointNode` ignored this detailed.
 So, it should look more like this:
 
-```Java
+```java
 @Specialization(assumptions = "bpUnchanged", guards = "!bp.enabled")
 public final boolean breakpointDisabled(
     @Cached("bp.unchanged") final Assumption bpUnchanged) {
@@ -327,8 +321,8 @@ and section length, as well as a specific tag for the source section.
 So, in this case,
 we just rely on Truffle's breakpoints with a more fine-grained way of setting them.
 
-For other case, we completely manage the breakpoints ourselves
-with the aforementioned `BreakpointNode`, as discussed in [sec. 1](#custom-bp).
+For other cases, we completely manage the breakpoints ourselves
+with the aforementioned `BreakpointNode` as discussed in [sec. 1](#custom-bp).
 
 ### 5. Java Conditions for Breakpoints
 
